@@ -39,6 +39,9 @@ def sanity_check():
     FLAGS.crop_image_side = boundary
     FLAGS.crop_image_size = crop_size * smaller_output_size + boundary * 2
 
+    if not FLAGS.train:
+        FLAGS.batch_size = 1
+
 
 def build_dataset_reader():
     """
@@ -64,10 +67,15 @@ def build_dataset_reader():
 
     image = tf.cast(image, dtype=tf.float32) / 127.5 - 1.0
 
-    return tf.train.batch(
-        tensors=[image],
-        batch_size=FLAGS.batch_size,
-        capacity=FLAGS.batch_size)
+    if FLAGS.train:
+        return tf.train.batch(
+            tensors=[image],
+            batch_size=FLAGS.batch_size,
+            capacity=FLAGS.batch_size,
+            allow_smaller_final_batch=not FLAGS.train)
+    else:
+        return tf.reshape(
+            image, [1, FLAGS.crop_image_size, FLAGS.crop_image_size, 3])
 
 
 def build_srcnn():
@@ -158,7 +166,7 @@ def build_srcnn():
     }
 
 
-def build_summaries(srcnn):
+def build_sr_result(srcnn):
     """
     """
     batch = FLAGS.batch_size
@@ -173,7 +181,13 @@ def build_summaries(srcnn):
     sr_image = tf.reshape(sr_images, [1, batch * width, width, 3])
     sd_image = tf.reshape(srcnn['sd_images'], [1, batch * width, width, 3])
 
-    image = tf.concat([hd_image, sd_image, sr_image], axis=2)
+    return tf.concat([hd_image, sd_image, sr_image], axis=2)
+
+
+def build_summaries(srcnn):
+    """
+    """
+    image = build_sr_result(srcnn)
 
     summary_image = tf.summary.image('image', image)
 
@@ -249,6 +263,29 @@ def train():
 def super_resolution():
     """
     """
+    ckpt_source_path = tf.train.latest_checkpoint(FLAGS.ckpt_dir_path)
+
+    srcnn = build_srcnn()
+
+    images = build_sr_result(srcnn)
+
+    image = tf.saturate_cast((images[0] + 1.0) * 127.5, dtype=tf.uint8)
+
+    image = tf.image.encode_jpeg(image)
+
+    image = tf.write_file(FLAGS.sr_target_path, image)
+
+    with tf.Session() as session:
+        tf.train.Saver().restore(session, ckpt_source_path)
+
+        # make dataset reader work
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(coord=coord)
+
+        session.run(image)
+
+        coord.request_stop()
+        coord.join(threads)
 
 
 def main(_):

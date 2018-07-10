@@ -172,10 +172,17 @@ def perceptual_loss(sr_images_vgg, hd_images_vgg):
     the second and fifth pooling layers and compute the MSE on their feature
     activations.
     """
-    loss_pool_2 = tf.losses.mean_squared_error(
-        sr_images_vgg['block2_pool'], hd_images_vgg['block2_pool'])
-    loss_pool_5 = tf.losses.mean_squared_error(
-        sr_images_vgg['block5_pool'], hd_images_vgg['block5_pool'])
+    # NOTE: 5.3 for the perceptual loss Lp and the texture loss Lt, we
+    #       normalized feature activations to have mean of one.
+    axis = [1, 2, 3]
+
+    sr_block2_pool = tf.nn.l2_normalize(sr_images_vgg['block2_pool'], axis=axis)
+    hd_block2_pool = tf.nn.l2_normalize(hd_images_vgg['block2_pool'], axis=axis)
+    sr_block5_pool = tf.nn.l2_normalize(sr_images_vgg['block5_pool'], axis=axis)
+    hd_block5_pool = tf.nn.l2_normalize(hd_images_vgg['block5_pool'], axis=axis)
+
+    loss_pool_2 = tf.losses.mean_squared_error(sr_block2_pool, hd_block2_pool)
+    loss_pool_5 = tf.losses.mean_squared_error(sr_block5_pool, hd_block5_pool)
 
     # NOTE: arXiv:1612.07915, weights come from table 2
     return 0.2 * loss_pool_2 + 0.02 * loss_pool_5
@@ -204,11 +211,8 @@ def texture_matching_loss(sr_images_vgg, hd_images_vgg):
 
         # NOTE: 5.3 for the perceptual loss Lp and the texture loss Lt, we
         #       normalized feature activations to have mean of one.
-        sr_norm = tf.norm(sr_tensors, axis=[1, 2], keepdims=True)
-        hd_norm = tf.norm(hd_tensors, axis=[1, 2], keepdims=True)
-
-        sr_tensors = tf.div(sr_tensors, sr_norm)
-        hd_tensors = tf.div(hd_tensors, hd_norm)
+        sr_tensors = tf.nn.l2_normalize(sr_tensors, axis=[1, 2, 3])
+        hd_tensors = tf.nn.l2_normalize(hd_tensors, axis=[1, 2, 3])
 
         # NOTE: 4.2.3 empirically, we found a patch size of 16x16 pixels to
         #       result in the best balance between faithful texture generation
@@ -243,6 +247,9 @@ def texture_matching_loss(sr_images_vgg, hd_images_vgg):
 def build_enet(sd_images, hd_images, vgg19_path):
     """
     NOTE: ENet-PAT
+
+    sd_images: -1.0 ~ +1.0
+    hd_images: -1.0 ~ +1.0
     """
     model = {}
 
@@ -262,8 +269,12 @@ def build_enet(sd_images, hd_images, vgg19_path):
     vgg19_weights = model_vgg.load_vgg_weights(vgg19_path)
 
     # NOTE: vgg features for perceptual loss and texture matching loss
-    hd_images_vgg = model_vgg.build_vgg19_model(hd_images, vgg19_weights)
-    sr_images_vgg = model_vgg.build_vgg19_model(sr_images, vgg19_weights)
+    #       vgg net requires pixel values in range 0.0 ~ 255.0
+    hd_vgg_input = hd_images * 127.5 + 127.5
+    sr_vgg_input = sr_images * 127.5 + 127.5
+
+    hd_images_vgg = model_vgg.build_vgg19_model(hd_vgg_input, vgg19_weights)
+    sr_images_vgg = model_vgg.build_vgg19_model(sr_vgg_input, vgg19_weights)
 
     # NOTE: descriminate real hd images
     real = build_discriminator(hd_images, 'd_')

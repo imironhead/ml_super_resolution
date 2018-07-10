@@ -49,6 +49,9 @@ def build_image_batch_iterator(dir_path, scale_factor, batch_size=32):
     # NOTE: to float32 images
     data = data.map(lambda x: tf.image.convert_image_dtype(x, tf.float32))
 
+    # NOTE: to -1.0 ~ +1.0
+    data = data.map(lambda x: x * 2.0 - 1.0)
+
     # NOTE: random crop to (32*alpha)x(32*alpha)x3
     # NOTE: arXiv: 1612.07919v2, 5.3
     #       we downsample the 256x256 images by alpha and then crop these to
@@ -57,17 +60,9 @@ def build_image_batch_iterator(dir_path, scale_factor, batch_size=32):
 
     data = data.map(lambda x: tf.random_crop(x, size=[size, size, 3]))
 
-    # NOTE: random horizontal flip
+    # NOTE: random flip
     data = data.map(tf.image.random_flip_left_right)
-
-    # NOTE: hd part
-    data_hd = data
-
-    # NOTE: sd part
-    data_sd = data.map(lambda x: tf.image.resize_images(x, [32, 32]))
-
-    # NOTE: zip as feature and label
-    data = tf.data.Dataset.zip((data_sd, data_hd))
+    data = data.map(tf.image.random_flip_up_down)
 
     # NOTE: combine images to batch
     data = data.batch(batch_size=batch_size)

@@ -13,7 +13,9 @@ def build_training_model(dataset_path, batch_size, vgg19_path):
     data_iterator = datasets.build_image_batch_iterator(
         dataset_path, 4, batch_size=batch_size)
 
-    sd_images, hd_images = data_iterator.get_next()
+    hd_images = data_iterator.get_next()
+
+    sd_images = tf.image.resize_images(hd_images, [32, 32])
 
     model = model_enet.build_enet(sd_images, hd_images, vgg19_path)
 
@@ -90,8 +92,7 @@ def main(_):
             # NOTE: train discriminator
             fetch = {'step': model['step'], 'trainer': model['d_trainer']}
 
-            if step % 10 == 0:
-                fetch['summary_losses'] = summaries['discriminator']
+            fetch['summary_losses'] = summaries['discriminator']
 
             fetched = session.run(fetch)
 
@@ -101,8 +102,8 @@ def main(_):
             # NOTE: train generator
             fetch = {'step': model['step'], 'trainer': model['g_trainer']}
 
-            if step % 10 == 0:
-                fetch['summary_losses'] = summaries['generator']
+            fetch['summary_losses'] = summaries['generator']
+
             if step % 1000 == 0:
                 fetch['summary_images'] = summaries['images']
 

@@ -1,6 +1,9 @@
 """
 """
 import os
+
+import numpy as np
+import scipy.misc
 import tensorflow as tf
 
 
@@ -44,7 +47,7 @@ def build_image_batch_iterator(dir_path, scale_factor, batch_size=32):
     data = data.map(tf.read_file)
 
     # NOTE: decode image, transform data from byte data to pixels
-    data = data.map(lambda x: tf.image.decode_image(x, channels=3))
+    data = data.map(lambda x: tf.image.decode_png(x, channels=3))
 
     # NOTE: to float32 images
     data = data.map(lambda x: tf.image.convert_image_dtype(x, tf.float32))
@@ -71,4 +74,55 @@ def build_image_batch_iterator(dir_path, scale_factor, batch_size=32):
     iterator = data.make_initializable_iterator()
 
     return iterator
+
+
+def image_batches(source_dir_path, scale_factor, batch_size=32):
+    """
+    """
+    def image_paths():
+        """
+        """
+        paths = tf.gfile.ListDirectory(source_dir_path)
+
+        while True:
+            np.random.shuffle(paths)
+
+            for path in paths:
+                yield os.path.join(source_dir_path, path)
+
+    image_path_generator = image_paths()
+
+    while True:
+        sd_images = []
+        bq_images = []
+        hd_images = []
+
+        for _ in range(batch_size):
+            image_path = next(image_path_generator)
+
+            # NOTE: read image, image may come from google cloud storage
+            hd_image = scipy.misc.imread(tf.gfile.GFile(image_path, 'rb'))
+
+            # NOTE: random crop to 128 x 128 x 3
+            x = np.random.randint(128)
+            y = np.random.randint(128)
+
+            hd_image = hd_image[y:y+128, x:x+128, :]
+
+            sd_image = scipy.misc.imresize(hd_image, 25)
+            bq_image = scipy.misc.imresize(sd_image, 400, 'bicubic')
+
+            sd_image = sd_image.astype(np.float32) / 127.5 - 1.0
+            bq_image = bq_image.astype(np.float32) / 127.5 - 1.0
+            hd_image = hd_image.astype(np.float32) / 127.5 - 1.0
+
+            sd_images.append(sd_image)
+            bq_images.append(bq_image)
+            hd_images.append(hd_image)
+
+        sd_images = np.stack(sd_images, axis=0)
+        bq_images = np.stack(bq_images, axis=0)
+        hd_images = np.stack(hd_images, axis=0)
+
+        yield sd_images, bq_images, hd_images
 

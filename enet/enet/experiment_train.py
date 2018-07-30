@@ -162,7 +162,6 @@ def main(_):
 
 if __name__ == '__main__':
     tf.app.flags.DEFINE_string('train_dir_path', None, '')
-    tf.app.flags.DEFINE_string('valid_dir_path', None, '')
     tf.app.flags.DEFINE_string('vgg19_path', None, '')
     tf.app.flags.DEFINE_string('ckpt_path', None, '')
     tf.app.flags.DEFINE_string('log_path', None, '')
@@ -171,4 +170,3 @@ if __name__ == '__main__':
     tf.app.flags.DEFINE_integer('batch_size', 64, '')
 
     tf.app.run()
-

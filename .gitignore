@@ -101,5 +101,7 @@ ENV/
 .mypy_cache/
 
 */ckpts/
+*/ckpt/
 */logs/
 
+*.swp

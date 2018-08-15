@@ -26,7 +26,10 @@ def build_model():
         name='hd_images')
 
     model = model_vdsr.build_model(
-        sd_images, hd_images, num_layers=FLAGS.num_layers)
+        sd_images,
+        hd_images,
+        num_layers=FLAGS.num_layers,
+        use_adam=FLAGS.use_adam)
 
     return model
 
@@ -39,7 +42,7 @@ def build_dataset():
     # NOTE: transform scaling_factors from a string to a list of floats
     if isinstance(FLAGS.scaling_factors, str):
         FLAGS.scaling_factors = \
-            [float(x) for x in FLAGS.scaling_factors.split('/')]
+            [float(x) for x in FLAGS.scaling_factors.split('_')]
 
     image_batches = dataset.image_batches(
         FLAGS.data_path,
@@ -55,12 +58,10 @@ def build_summaries(model):
     """
     FLAGS = tf.app.flags.FLAGS
 
-    summaries = {}
-
     # NOTE: loss summaries
-    summaries['loss'] = tf.summary.scalar('loss', model['loss'])
+    summary_step = tf.summary.scalar('loss', model['loss'])
 
-    # NOTE: build image summaries
+    # NOTE: build image summary
     sd_images = model['sd_images']
     sr_images = model['sr_images']
     hd_images = model['hd_images']
@@ -73,9 +74,22 @@ def build_summaries(model):
 
     images = tf.saturate_cast(images * 127.5 + 127.5, tf.uint8)
 
-    summaries['image'] = tf.summary.image('sd_sr_hd', images, max_outputs=4)
+    summary_image = tf.summary.image('sd_sr_hd', images, max_outputs=4)
 
-    return summaries
+    # NOTE: build psnr summary
+    psnrs = tf.image.psnr(sr_images, hd_images, max_val=2.0)
+
+    psnrs = tf.reduce_mean(psnrs)
+
+    summary_psnr = tf.summary.scalar('psnr', psnrs)
+
+    summary_epoch = tf.summary.merge(
+        [summary_step, summary_image, summary_psnr])
+
+    return {
+        'step': summary_step,
+        'epoch': summary_epoch,
+    }
 
 
 def main(_):
@@ -109,8 +123,9 @@ def main(_):
         while True:
             step = session.run(model['step'])
 
-            if (step + 1) % FLAGS.save_checkpoint_steps == 0:
+            if step == FLAGS.stop_training_at_k_step:
                 saver.save(session, target_ckpt_path, global_step=step)
+                break
 
             lr = learning_rate * (decay_factor ** (step // decay_steps))
 
@@ -126,19 +141,16 @@ def main(_):
                 'step': model['step'],
                 'loss': model['loss'],
                 'trainer': model['trainer'],
-                'summary_loss': summaries['loss'],
             }
 
             if (step + 1) % 100 == 0:
-                fetch['summary_image'] = summaries['image']
+                fetch['summary'] = summaries['epoch']
+            else:
+                fetch['summary'] = summaries['step']
 
             fetched = session.run(fetch, feed_dict=feeds)
 
-            if 'summary_loss' in fetched:
-                reporter.add_summary(fetched['summary_loss'], fetched['step'])
-
-            if 'summary_image' in fetched:
-                reporter.add_summary(fetched['summary_image'], fetched['step'])
+            reporter.add_summary(fetched['summary'], fetched['step'])
 
 
 if __name__ == '__main__':
@@ -156,15 +168,11 @@ if __name__ == '__main__':
     # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
     #       deep convolutional networks
     #
-    #       figure 5
+    #       2, 3 or 4
     tf.app.flags.DEFINE_string(
         'scaling_factors',
-        '1.5/2.0/2.5/3.0/3.5/4.0',
-        'different scaling factors for training, saparate by slash(/)')
-
-    # NOTE: save new checkpoint every n steps
-    tf.app.flags.DEFINE_integer(
-        'save_checkpoint_steps', 9000, 'save new checkpoint every n steps')
+        '2_3_4',
+        'different scaling factors for training, saparate by _')
 
     # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
     #       deep convolutional networks
@@ -192,13 +200,23 @@ if __name__ == '__main__':
     # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
     #       deep convolutional networks
     #
-    #       learning rate was initially set to 0.1 and then decreased by a
-    #       factor of 10 every 20 epochs.
+    #       we train all experiments over 80 epochs (9960 iterations with batch
+    #       size 64). learning rate was initially set to 0.1 and then decreased
+    #       by a factor of 10 every 20 epochs.
     tf.app.flags.DEFINE_integer('learning_rate_decay_steps', 2560, '')
 
     tf.app.flags.DEFINE_float('learning_rate_decay_factor', 0.1, '')
 
     tf.app.flags.DEFINE_float('initial_learning_rate', 0.1, '')
+
+    tf.app.flags.DEFINE_integer(
+        'stop_training_at_k_step',
+        12800,
+        'stop training at k step, default is stop after 80 epochs')
+
+    # NOTE: use newer optimizer
+    tf.app.flags.DEFINE_boolean(
+        'use_adam', True, 'use adam instead of momentum optimizer')
 
     tf.app.run()
 

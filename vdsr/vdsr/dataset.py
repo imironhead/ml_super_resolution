@@ -4,9 +4,38 @@ import os
 
 import numpy as np
 import skimage.io
+import skimage.filters
 import skimage.transform
 import skimage.util
 import tensorflow as tf
+
+
+def hd_image_to_sd_image(hd_image, scaling_factor):
+    """
+    down scale image then scale back to build sd version. assume the type of
+    the image is already float.
+    """
+    hd_h, hd_w, c = hd_image.shape
+
+    # NOTE: downscaled size
+    sd_h = int(hd_h / scaling_factor)
+    sd_w = int(hd_w / scaling_factor)
+
+    # NOTE: in scikit-image 0.14, anti_aliasing fails if mode is ;edge'
+    #       https://github.com/scikit-image/scikit-image/issues/3299
+    #       DIY, sigma function is from the implementation of scikit-image
+    sigma = np.maximum(0.0, 0.5 * (scaling_factor - 1.0))
+
+    bl_image = skimage.filters.gaussian(hd_image, sigma, mode='nearest')
+
+    # NOTE: downscale then upscale
+    sd_image = skimage.transform.resize(
+        bl_image, [sd_h, sd_w], mode='edge', anti_aliasing=False)
+
+    sd_image = skimage.transform.resize(
+        sd_image, [hd_h, hd_w], mode='edge', anti_aliasing=False)
+
+    return sd_image
 
 
 def image_batches(source_dir_path, scaling_factors, image_size, batch_size):
@@ -37,14 +66,11 @@ def image_batches(source_dir_path, scaling_factors, image_size, batch_size):
     #       convolutional networks
     #       figure 5
     if scaling_factors is None or len(scaling_factors) <= 0:
-        scaling_factors = [1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+        scaling_factors = [2.0, 3.0, 4.0]
 
     # NOTE: sanity check
     if any([s <= 1 for s in scaling_factors]):
         raise Exception('invalide scaling factors')
-
-    # NOTE: to downscale sizes
-    scaling_sizes = [int(image_size / s) for s in scaling_factors]
 
     # NOTE: infinit image path generator
     image_path_generator = image_paths()
@@ -76,20 +102,13 @@ def image_batches(source_dir_path, scaling_factors, image_size, batch_size):
         if 1 == np.random.choice([0, 1]):
             hd_image = hd_image[:, ::-1, :]
 
-        # NOTE: build sd version
-        size = np.random.choice(scaling_sizes)
-
-        sd_image = skimage.transform.resize(
-            hd_image, [size, size], mode='edge')
-
-        sd_image = skimage.transform.resize(
-            sd_image,
-            [image_size, image_size],
-            mode='edge')
-
         # NOTE: cast uint8 to float32
-        sd_image = skimage.util.img_as_float32(sd_image)
         hd_image = skimage.util.img_as_float32(hd_image)
+
+        # NOTE: build sd version
+        scaling_factor = np.random.choice(scaling_factors)
+
+        sd_image = hd_image_to_sd_image(hd_image, scaling_factor)
 
         # NOTE: from [0.0, 1.0] to [-1.0, +1.0]
         sd_image = sd_image * 2.0 - 1.0

@@ -3,7 +3,7 @@
 import tensorflow as tf
 
 
-def build_model(sd_images, hd_images=None, num_layers=20):
+def build_model(sd_images, hd_images=None, num_layers=20, use_adam=False):
     """
     sd_images: lo resolution images to be super resolved
     hd_images: hi resolution images as ground truth of super resolved results
@@ -96,10 +96,12 @@ def build_model(sd_images, hd_images=None, num_layers=20):
     #
     #       the loss function now becomes 0.5 * || r - f(x) ||^2, where f(x) is
     #       the network prediction
-    loss = 0.5 * tf.losses.mean_squared_error(
+    loss = tf.losses.mean_squared_error(
         hd_images,
         sr_images,
-        reduction=tf.losses.Reduction.SUM_OVER_BATCH_SIZE)
+        reduction=tf.losses.Reduction.MEAN)
+
+    loss = loss + sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
 
     # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
     #       deep convolutional networks
@@ -117,43 +119,48 @@ def build_model(sd_images, hd_images=None, num_layers=20):
         initializer=tf.constant_initializer(0.1, dtype=tf.float32),
         dtype=tf.float32)
 
-    # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
-    #       deep convolutional networks
-    #
-    #       5.2
-    #       momentum and weight decay parameters are set to 0.9 and 0.0001,
-    #       respectively.
-    #
-    # NOTE: not sure if it's the same as tf.train.MomentumOptimizer
-    trainer = tf.train.MomentumOptimizer(
-        learning_rate=learning_rate, momentum=0.9)
-
-    # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
-    #       deep convolutional networks
-    #
-    #       3.2
-    #       for maximal speed of convergence, we clip the gradients to
-    #       [-theta / learning_rate, theta / learning_rate], where gamma
-    #       denotes the current learning rate.
-    #
-    # NOTE: can not find the value of theta on the paper
-    gradient_cap = tf.constant(0.01, dtype=tf.float32, name='gradient_cap')
-
-    cap = gradient_cap / learning_rate
-
-    grad_var_pairs = trainer.compute_gradients(loss, tf.trainable_variables())
-
-    capped_grad_var_pairs = []
-
-    for gradient, variable in grad_var_pairs:
-        gradient = tf.clip_by_value(gradient, -cap, cap)
-
-        capped_grad_var_pairs.append((gradient, variable))
-
     step = tf.train.get_or_create_global_step()
 
-    trainer = trainer.apply_gradients(
-        capped_grad_var_pairs, global_step=step)
+    if use_adam:
+        trainer = tf.train \
+            .AdamOptimizer(learning_rate=learning_rate) \
+            .minimize(loss, global_step=step)
+    else:
+        # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
+        #       deep convolutional networks
+        #
+        #       5.2
+        #       momentum and weight decay parameters are set to 0.9 and 0.0001,
+        #       respectively.
+        #
+        # NOTE: not sure if it's the same as tf.train.MomentumOptimizer
+        trainer = tf.train.MomentumOptimizer(
+            learning_rate=learning_rate, momentum=0.9)
+
+        # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
+        #       deep convolutional networks
+        #
+        #       3.2
+        #       for maximal speed of convergence, we clip the gradients to
+        #       [-theta / learning_rate, theta / learning_rate], where gamma
+        #       denotes the current learning rate.
+        #
+        # NOTE: can not find the value of theta on the paper
+        gradient_cap = tf.constant(0.01, dtype=tf.float32, name='gradient_cap')
+
+        cap = gradient_cap / learning_rate
+
+        grad_var_pairs = trainer.compute_gradients(loss, tf.trainable_variables())
+
+        capped_grad_var_pairs = []
+
+        for gradient, variable in grad_var_pairs:
+            gradient = tf.clip_by_value(gradient, -cap, cap)
+
+            capped_grad_var_pairs.append((gradient, variable))
+
+        trainer = trainer.apply_gradients(
+            capped_grad_var_pairs, global_step=step)
 
     model['step'] = step
     model['loss'] = loss

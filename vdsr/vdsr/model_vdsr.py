@@ -46,6 +46,13 @@ def build_model(sd_images, hd_images=None, num_layers=20, use_adam=False):
 
     for i in range(num_layers - 1):
         # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
+        #       deep convolutional networks
+        #
+        #       for visualization of feature maps
+        conv_name = 'conv.{}'.format(i + 1)
+        relu_name = 'relu.{}'.format(i + 1)
+
+        # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
         #       deep convolutional networks, 3.1
         #
         #       we use d layers where layers except the first and the last are
@@ -61,6 +68,12 @@ def build_model(sd_images, hd_images=None, num_layers=20, use_adam=False):
             activation=tf.nn.relu,
             kernel_initializer=initializer,
             kernel_regularizer=regularizer)
+
+        model[conv_name] = tf.identity(tensors, conv_name)
+
+        tensors = tf.nn.relu(tensors)
+
+        model[relu_name] = tf.identity(tensors, relu_name)
 
     # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
     #       deep convolutional networks, 3.1
@@ -78,6 +91,14 @@ def build_model(sd_images, hd_images=None, num_layers=20, use_adam=False):
         activation=None,
         kernel_initializer=initializer,
         kernel_regularizer=regularizer)
+
+    # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
+    #       deep convolutional networks
+    #
+    #       for visualization of feature maps
+    conv_name = 'conv.{}'.format(num_layers)
+
+    model[conv_name] = tf.identity(tensors, conv_name)
 
     # NOTE: super resolved
     sr_images = sd_images + tensors

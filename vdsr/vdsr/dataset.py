@@ -21,7 +21,7 @@ def hd_image_to_sd_image(hd_image, scaling_factor):
     sd_h = int(hd_h / scaling_factor)
     sd_w = int(hd_w / scaling_factor)
 
-    # NOTE: in scikit-image 0.14, anti_aliasing fails if mode is ;edge'
+    # NOTE: in scikit-image 0.14, anti_aliasing fails if mode is 'edge'
     #       https://github.com/scikit-image/scikit-image/issues/3299
     #       DIY, sigma function is from the implementation of scikit-image
     sigma = np.maximum(0.0, 0.5 * (scaling_factor - 1.0))

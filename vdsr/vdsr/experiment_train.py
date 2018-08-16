@@ -15,13 +15,13 @@ def build_model():
 
     # NOTE: placeholder as source sd images
     sd_images = tf.placeholder(
-        shape=[None, FLAGS.image_size, FLAGS.image_size, 3],
+        shape=[None, None, None, 3],
         dtype=tf.float32,
         name='sd_images')
 
     # NOTE: placeholder as target hd images (ground-truth)
     hd_images = tf.placeholder(
-        shape=[None, FLAGS.image_size, FLAGS.image_size, 3],
+        shape=[None, None, None, 3],
         dtype=tf.float32,
         name='hd_images')
 

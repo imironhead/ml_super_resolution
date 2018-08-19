@@ -228,4 +228,4 @@ Not good.
 * Set5: [Low-Complexity Single-Image Super-Resolution based on Nonnegative Neighbor Embedding](http://people.rennes.inria.fr/Aline.Roumy/results/SR_BMVC12.html)
 * Set14: [On Single Image Scale-Up using Sparse-Representations](https://sites.google.com/site/romanzeyde/research-interests)
 * B100: [BSDS300 Test](https://www2.eecs.berkeley.edu/Research/Projects/CS/vision/bsds/)
-* Urban 100: (Single Image Super-Resolution from Transformed Self-Exemplars)[https://sites.google.com/site/jbhuang0604/publications/struct_sr]
+* Urban 100: [Single Image Super-Resolution from Transformed Self-Exemplars](https://sites.google.com/site/jbhuang0604/publications/struct_sr)

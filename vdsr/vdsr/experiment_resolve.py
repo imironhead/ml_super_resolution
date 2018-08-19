@@ -147,11 +147,10 @@ if __name__ == '__main__':
 
     # NOTE: path to the image for the result of super resolving.
     tf.app.flags.DEFINE_string(
-        'sr_image_path', None, 'path to the image of super resolving result')
+        'sr_image_path', None, 'path to the image of super resolved result')
 
     # NOTE: scaling factor for building the sd version image.
     tf.app.flags.DEFINE_float(
         'scaling_factor', 2.0, 'scaling factor for this experiment')
 
     tf.app.run()
-

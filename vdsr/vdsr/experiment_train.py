@@ -157,7 +157,7 @@ if __name__ == '__main__':
     tf.app.flags.DEFINE_string(
         'data_path',
         None,
-        'path to a directory which contains all image traing data')
+        'path to a directory which contains all image training data')
 
     tf.app.flags.DEFINE_string(
         'ckpt_path', None, 'path to a directory for keeping the checkpoint')
@@ -172,7 +172,7 @@ if __name__ == '__main__':
     tf.app.flags.DEFINE_string(
         'scaling_factors',
         '2_3_4',
-        'different scaling factors for training, saparate by _')
+        'different scaling factors for training, separated by _')
 
     # NOTE: arXiv:1511.04587v2, accurate image super-resolution using very
     #       deep convolutional networks
@@ -219,4 +219,3 @@ if __name__ == '__main__':
         'use_adam', True, 'use adam instead of momentum optimizer')
 
     tf.app.run()
-

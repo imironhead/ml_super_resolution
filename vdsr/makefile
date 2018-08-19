@@ -24,7 +24,16 @@ submit:
 		--batch_size=64 \
 		--num_layers=20 \
 		--use_adam \
-		--initial_learning_rate=0.00001 \
+		--initial_learning_rate=0.00005 \
 		--learning_rate_decay_steps=2560 \
 		--learning_rate_decay_factor=0.9
+
+sr:
+	python -m vdsr.experiment_resolve \
+		--meta_path=gs://hecate-research-ml-results/ckpt_vdsr/vdsr_2_3_4_20180816144707/model.ckpt-25600.meta \
+		--ckpt_path=gs://hecate-research-ml-results/ckpt_vdsr/vdsr_2_3_4_20180816144707/model.ckpt-25600 \
+		--ground_truth_mode=True \
+		--hd_image_path=gs://hecate-research-datasets/BSDS300/images/test/148026.jpg \
+		--sr_image_path=./sr/sr_234_3_148026.png \
+		--scaling_factor=3.0
 

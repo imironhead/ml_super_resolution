@@ -106,25 +106,25 @@ Get PSNR/SSIM of Bicubic & super resolved results.
 ![loss](../assets/vdsr-loss.png)
 
 x2
-![x2](../assets/vsdr-training-2-25499.png)
+![x2](../assets/vdsr-training-2-25499.png)
 
 x3
-![x3](../assets/vsdr-training-3-25599.png)
+![x3](../assets/vdsr-training-3-25599.png)
 
 x4
-![x4](../assets/vsdr-training-4-25499.png)
+![x4](../assets/vdsr-training-4-25499.png)
 
 x2,3
-![x2,3](../assets/vsdr-training-23-25499.png)
+![x2,3](../assets/vdsr-training-23-25499.png)
 
 x2,4
-![x2,4](../assets/vsdr-training-24-25499.png)
+![x2,4](../assets/vdsr-training-24-25499.png)
 
 x3,4
-![x3,4](../assets/vsdr-training-34-25499.png)
+![x3,4](../assets/vdsr-training-34-25499.png)
 
 x2,3,4
-![x2,3,4](../assets/vsdr-training-234-25499.png)
+![x2,3,4](../assets/vdsr-training-234-25499.png)
 
 ### Table 2
 

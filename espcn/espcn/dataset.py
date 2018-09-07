@@ -4,46 +4,54 @@ import itertools
 import os
 
 import numpy as np
-import skimage.filters
-import skimage.io
 import tensorflow as tf
 
 
-def decode_patch_pair(patch_pair_record):
+def decode_patch_pair(scaling_factor=3):
     """
-    decode lr_patch & hr_patch from one TFRecord
+    return a method that decode lr_patch & hr_patch from one TFRecord
+    with pre-defined upscaling factor.
     """
-    features = tf.parse_single_example(
-        patch_pair_record,
-        features={
-            'lr_pixels': tf.FixedLenFeature([], tf.string),
-            'lr_height': tf.FixedLenFeature([], tf.int64),
-            'lr_width': tf.FixedLenFeature([], tf.int64),
-            'lr_depth': tf.FixedLenFeature([], tf.int64),
-            'hr_pixels': tf.FixedLenFeature([], tf.string),
-            'hr_height': tf.FixedLenFeature([], tf.int64),
-            'hr_width': tf.FixedLenFeature([], tf.int64),
-            'hr_depth': tf.FixedLenFeature([], tf.int64),
-        })
+    def decode(patch_pair_record):
+        features = tf.parse_single_example(
+            patch_pair_record,
+            features={
+                'lr_pixels': tf.FixedLenFeature([], tf.string),
+                'lr_height': tf.FixedLenFeature([], tf.int64),
+                'lr_width': tf.FixedLenFeature([], tf.int64),
+                'lr_depth': tf.FixedLenFeature([], tf.int64),
+                'hr_pixels': tf.FixedLenFeature([], tf.string),
+                'hr_height': tf.FixedLenFeature([], tf.int64),
+                'hr_width': tf.FixedLenFeature([], tf.int64),
+                'hr_depth': tf.FixedLenFeature([], tf.int64),
+            })
 
-    lrh = tf.cast(features['lr_height'], tf.int32)
-    lrw = tf.cast(features['lr_width'], tf.int32)
-    lrd = tf.cast(features['lr_depth'], tf.int32)
+        lrh = tf.cast(features['lr_height'], tf.int32)
+        lrw = tf.cast(features['lr_width'], tf.int32)
+        lrd = tf.cast(features['lr_depth'], tf.int32)
 
-    hrh = tf.cast(features['hr_height'], tf.int32)
-    hrw = tf.cast(features['hr_width'], tf.int32)
-    hrd = tf.cast(features['hr_depth'], tf.int32)
+        hrh = tf.cast(features['hr_height'], tf.int32)
+        hrw = tf.cast(features['hr_width'], tf.int32)
+        hrd = tf.cast(features['hr_depth'], tf.int32)
 
-    lr_patch = tf.decode_raw(features['lr_pixels'], tf.float32)
-    hr_patch = tf.decode_raw(features['hr_pixels'], tf.float32)
+        lr_patch = tf.decode_raw(features['lr_pixels'], tf.float32)
+        hr_patch = tf.decode_raw(features['hr_pixels'], tf.float32)
 
-    lr_patch = tf.reshape(lr_patch, [lrh, lrw, lrd])
-    hr_patch = tf.reshape(hr_patch, [hrh, hrw, hrd])
+        # NOTE: lr_patch will be convolve in the model which mean its number of
+        #       channels must be know before any convolution (for we need to
+        #       create a variable of kernel with known shape).
+        # NOTE: lr_patch always has 3 channels (RGB)
+        #       hr_patch always has 3 * (factor ** 2) channels. the (factor **
+        #       2) part is the result of sub-pixel convolution.
+        lr_patch = tf.reshape(lr_patch, [lrh, lrw, 3])
+        hr_patch = tf.reshape(hr_patch, [hrh, hrw, 3 * (scaling_factor ** 2)])
 
-    return lr_patch, hr_patch
+        return lr_patch, hr_patch
+
+    return decode
 
 
-def build_image_batch_iterator(dir_path, batch_size=32):
+def build_image_batch_iterator(dir_path, batch_size=32, upscaling_factor=3):
     """
     read TFRecord batch. each record contains one lr_patch & one hr_patch.
     """
@@ -59,7 +67,7 @@ def build_image_batch_iterator(dir_path, batch_size=32):
     data = tf.data.TFRecordDataset(data, num_parallel_reads=16)
 
     # NOTE: decode tfrecord to get lr_patch and hr_patch
-    data = data.map(decode_patch_pair)
+    data = data.map(decode_patch_pair(upscaling_factor))
 
     # NOTE: combine images to batch
     data = data.batch(batch_size=batch_size)
@@ -102,12 +110,16 @@ def extract_image_patches(hr_image_path, upscaling_factor, hr_patch_size):
     range_y = range(0, h - hr_patch_size, hr_patch_size)
     range_x = range(0, w - hr_patch_size, hr_patch_size)
 
-    for x, y in itertools.product(range_x, range_y):
+    for x, y, u, v in itertools.product(range_x, range_y, [-1, 1], [-1, 1]):
         hr_patch = hr_image[y:y+hr_patch_size, x:x+hr_patch_size]
 
         lr_patch = bl_image[
             y+offset:y+offset+hr_patch_size:upscaling_factor,
             x+offset:x+offset+hr_patch_size:upscaling_factor]
+
+        # NOTE: left-right / top-bottom flipping
+        hr_patch = hr_patch[::u, ::v]
+        lr_patch = lr_patch[::u, ::v]
 
         # NOTE: reshape for espcn training
         # NOTE: assume hr_patch is (mono channel)
@@ -143,9 +155,7 @@ def extract_image_patches(hr_image_path, upscaling_factor, hr_patch_size):
         #       ]
         hr_patch = np.concatenate(hr_sub_patches, axis=1)
 
-        # NOTE: generate horizontally & vertically flipped versions
-        for u, v in itertools.product([-1, 1], repeat=2):
-            yield lr_patch[::u, ::v], hr_patch[::u, ::v]
+        yield lr_patch, hr_patch
 
 
 def int64_feature(v):
@@ -200,7 +210,7 @@ def main(_):
         patches = extract_image_patches(
             os.path.join(FLAGS.source_dir_path, image_path),
             FLAGS.upscaling_factor,
-            FLAGS.upscaling_factor * FLAGS.low_resolution_patch_size)
+            FLAGS.upscaling_factor * FLAGS.lr_patch_size)
 
         image_name, _ = os.path.splitext(image_path)
 
@@ -213,6 +223,9 @@ def main(_):
 
 
 if __name__ == '__main__':
+    import skimage.filters
+    import skimage.io
+
     # NOTE: extract sub-image patches from images in source_dir_path and save
     #       to result_dir_path
     tf.app.flags.DEFINE_string('source_dir_path', None, '')
@@ -223,7 +236,7 @@ if __name__ == '__main__':
     #       from the training ground truth images I_HR, where r is the
     #       upscaling factor.
     tf.app.flags.DEFINE_integer('upscaling_factor', 3, '')
-    tf.app.flags.DEFINE_integer('low_resolution_patch_size', 17, '')
+    tf.app.flags.DEFINE_integer('lr_patch_size', 17, '')
 
     tf.app.run()
 

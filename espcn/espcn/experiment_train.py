@@ -55,6 +55,8 @@ def build_summaries(model):
 
     cmp_images = tf.concat(sub_images, axis=2)
 
+    cmp_images = tf.saturate_cast(cmp_images * 127.5 + 127.5, tf.uint8)
+
     summary_patches = tf.summary.image('patches', cmp_images, max_outputs=1)
 
     return {

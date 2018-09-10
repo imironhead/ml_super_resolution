@@ -25,12 +25,34 @@ def build_model():
         shape=[None, None, None, 3 * (model['scaling_factor'] ** 2)],
         dtype=tf.float32)
 
-    sr_results = tf.clip_by_value(model['sr_results'], -1.0, 1.0)
-
     model['hr_targets'] = hr_targets
 
-    model['psnrs'] = tf.image.psnr(hr_targets, sr_results, 2.0)
-    model['ssims'] = tf.image.ssim(hr_targets, sr_results, 2.0)
+    # NOTE: build evaluation metrics
+    #       remap to [0.0, 1.0] for potential color space conversion
+    sr_results = model['sr_results'] * 0.5 + 0.5
+    hr_targets = model['hr_targets'] * 0.5 + 0.5
+
+    sr_results = tf.clip_by_value(sr_results, 0.0, 1.0)
+    hr_targets = tf.clip_by_value(hr_targets, 0.0, 1.0)
+
+    if FLAGS.score_space == 'y':
+        shape = tf.shape(hr_targets)
+
+        h, w = shape[1], shape[2]
+
+        w *= model['scaling_factor'] ** 2
+
+        sr_results = tf.reshape(sr_results, [-1, h, w, 3])
+        hr_targets = tf.reshape(hr_targets, [-1, h, w, 3])
+
+        sr_results = tf.image.rgb_to_yuv(sr_results)
+        hr_targets = tf.image.rgb_to_yuv(hr_targets)
+
+        sr_results = sr_results[:, :, :, :1]
+        hr_targets = hr_targets[:, :, :, :1]
+
+    model['psnrs'] = tf.image.psnr(hr_targets, sr_results, 1.0)
+    model['ssims'] = tf.image.ssim(hr_targets, sr_results, 1.0)
 
     return model
 
@@ -180,6 +202,9 @@ if __name__ == '__main__':
 
     tf.app.flags.DEFINE_string(
         'result_path', None, 'path for the super-resolved image')
+
+    tf.app.flags.DEFINE_string(
+        'score_space', 'y', 'evaluate on y(uv) or rgb')
 
     tf.app.run()
 

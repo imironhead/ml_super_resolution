@@ -14,7 +14,7 @@ def build_dataset_iterator():
     FLAGS = tf.app.flags.FLAGS
 
     return dataset.build_image_batch_iterator(
-        FLAGS.data_path, FLAGS.batch_size)
+        FLAGS.data_path, FLAGS.batch_size, FLAGS.scaling_factor)
 
 
 def build_model(dataset_iterator):

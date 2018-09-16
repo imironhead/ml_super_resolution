@@ -178,6 +178,8 @@ def super_resolve_image():
 
     sr_result = sr_result * 0.5 + 0.5
 
+    sr_result = np.clip(sr_result, 0.0, 1.0)
+
     with tf.gfile.GFile(FLAGS.result_path, 'wb') as sr_image_file:
         skimage.io.imsave(sr_image_file, sr_result)
 

@@ -120,7 +120,7 @@ class Generator(tf.keras.Model):
         self._layer_add = tf.keras.layers.Add()
 
     @tf.function
-    def call(self, sd_images, bq_images):
+    def call(self, inputs):
         """
         Required:
         - sd_images
@@ -134,6 +134,8 @@ class Generator(tf.keras.Model):
         - sr_images
             Tensors of super resolved images.
         """
+        sd_images, bq_images = inputs
+
         tensors = functools.reduce(
             lambda tensors, layer: layer(tensors),
             self._generator_layers,
@@ -182,7 +184,7 @@ class Discriminator(tf.keras.Model):
             tf.keras.layers.Dense(1, activation=tf.nn.sigmoid))
 
     @tf.function
-    def call(self, hd_images):
+    def call(self, inputs):
         """
         Required:
         - hd_images:
@@ -194,7 +196,7 @@ class Discriminator(tf.keras.Model):
         return functools.reduce(
             lambda tensors, layer: layer(tensors),
             self._discriminator_layers,
-            hd_images)
+            inputs)
 
 
 class GeneratorTrace:
@@ -311,7 +313,7 @@ class GeneratorTrace:
             Information to train the model for one step.
         """
         with tf.GradientTape() as tape:
-            sr_images = self._generator(sd_images, bq_images)
+            sr_images = self._generator([sd_images, bq_images])
 
             # NOTE: VGG features for perceptual loss and texture matching loss.
             #       VGG net requires pixel values in range 0.0 ~ 255.0.
@@ -375,7 +377,7 @@ class DiscriminatorTrace:
             Information to train the model for one step.
         """
         with tf.GradientTape() as tape:
-            sr_images = self._generator(sd_images, bq_images)
+            sr_images = self._generator([sd_images, bq_images])
 
             real = self._discriminator(hd_images)
             fake = self._discriminator(sr_images)

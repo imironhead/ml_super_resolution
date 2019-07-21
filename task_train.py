@@ -67,6 +67,22 @@ def global_step(context):
     return step + context['experiment']['global_step']
 
 
+def find_latest_checkpoint(path):
+    """
+    """
+    if not os.path.isdir(path):
+        return path
+
+    names = os.listdir(path)
+    names = [name for name in names if name.endswith('_checkpoint.yaml')]
+    names = sorted(names)
+
+    if names:
+        return os.path.join(path, names[-1])
+    else:
+        return path
+
+
 def load_experiment(path):
     """
     Read experiment information from a yaml file. Return a dictionary contains
@@ -473,4 +489,6 @@ if __name__ == '__main__':
         [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120),
          tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120)])
 
-    train_validate_save(sys.argv[1])
+    experiment_path = find_latest_checkpoint(sys.argv[1])
+
+    train_validate_save(experiment_path)

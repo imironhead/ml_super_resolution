@@ -143,16 +143,28 @@ def build_optimizer(optimizer_config):
 
 
 def build_strategic_training_model(
-        strategy, base_model, index_inputs, optimizer, global_batch_size):
+        strategy, base_model, index_inputs, optimizer, num_replicas):
     """
     """
+    # NOTE: Refer to tensorflow distribute_strategy guide.
+    #       https://www.tensorflow.org/beta/guide/distribute_strategy#using_tfdistributestrategy_with_custom_training_loops
+    #       Using tf.distribute.Strategy with custom training loops
+    #
+    #       When apply_gradients is called within a distribution strategy
+    #       scope, its behavior is modified. Specifically, before applying
+    #       gradients on each parallel instance during synchronous training, it
+    #       performs a sum-over-all-replicas of the gradients.
+    # NOTE: All losses from model must be element-wisely averaged. So all we
+    #       have to do for apply_gradients is divieding by number of replicas.
+    #       Then apply_gradients will multiply it back by sum-over-all-replicas
+    #       of the gradients.
     def train_one_step(inputs):
         new_inputs = [inputs[index] for index in index_inputs]
 
         with tf.GradientTape() as tape:
             loss = base_model(new_inputs)
 
-            loss = tf.reduce_sum(loss) * (1.0 / global_batch_size)
+            loss = tf.reduce_sum(loss) * (1.0 / num_replicas)
 
         gradients = tape.gradient(loss, base_model.trainable_variables)
 
@@ -264,13 +276,10 @@ def build_models(context):
 
         model = context['models']['extensions'][model_name]
 
-        context['optimizers'][optimizer_name] = build_optimizer(config)
+        with context['strategy'].scope():
+            context['optimizers'][optimizer_name] = build_optimizer(config)
 
         data_stream = context['data_streams'][config['data_stream']['name']]
-
-        data_stream_config = context['experiment']['data_streams'][config['data_stream']['name']]
-
-        globatch_size = data_stream_config['batch_size'] * num_gpus
 
         with context['strategy'].scope():
             strategic_model = build_strategic_training_model(
@@ -278,7 +287,7 @@ def build_models(context):
                 model,
                 config['data_stream']['parameters'],
                 context['optimizers'][optimizer_name],
-                globatch_size)
+                num_gpus)
 
             strategic_model(next(data_stream))
 

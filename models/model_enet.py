@@ -12,24 +12,101 @@ import tensorflow as tf
 from . import model_vgg
 
 
-def normalize(tensors):
+def normalize(tensor):
     """
     Arxiv 1612.07915, 5.3,
-    for the perceptual loss Lp and the texture loss Lt, we normalized feature
+    For the perceptual loss Lp and the texture loss Lt, we normalized feature
     activations to have mean of one.
-    """
-    mean = tf.reduce_mean(tensors, axis=-1, keepdims=True)
 
-    return tensors / (mean + 0.000001)
+    Arguments:
+        tensor: A tensor to be normalized.
+
+    Return:
+        A normalized tensor with the same shape as the input tensor.
+    """
+    mean = tf.math.reduce_mean(tensor, axis=-1, keepdims=True)
+
+    return tensor / (mean + 0.000001)
+
+
+def mean_squared_error(tensor_a, tensor_b):
+    """
+    Compute the mean square errors of 2 tensors. Elementwise square errors are
+    firstly reduce summed. Then all elements across entire batch are averaged
+    to build the final tensor.
+
+    Arguments:
+        tensor_a: A tensor.
+        tensor_b: A tensor with the same shape of tensor_a.
+
+    Return:
+        All dimensions reduced mean squared error.
+    """
+    tensor = tf.math.subtract(tensor_a, tensor_b)
+    tensor = tf.math.square(tensor)
+    tensor = tf.math.reduce_sum(tensor, axis=-1)
+    tensor = tf.math.reduce_mean(tensor)
+
+    return tensor
+
+
+def mean_sigmoid_cross_entropy(labels, logits):
+    """
+    Compute the average sigmoid cross entropy over all elements.
+
+    Arguments:
+        labels: The label tensor.
+        logits: The logit tensor. Note that it shouldn't have been sigmoid
+            applied.
+
+    Return:
+        Averaged binary cross entropy over all elements.
+    """
+    tensor = tf.nn.sigmoid_cross_entropy_with_logits(labels, logits)
+    tensor = tf.math.reduce_mean(tensor)
+
+    return tensor
+
+
+def mean_real_sigmoid_cross_entropy(logits):
+    """
+    Work like mean_sigmoid_cross_entropy and all labels are ones.
+
+    Arguments:
+        logits: The logit tensor. Note that it shouldn't have been sigmoid
+            applied.
+
+    Return:
+        Averaged binary cross entropy over all elements.
+    """
+    return mean_sigmoid_cross_entropy(tf.ones_like(logits), logits)
+
+
+def mean_fake_sigmoid_cross_entropy(logits):
+    """
+    Work like mean_sigmoid_cross_entropy and all labels are zeros.
+
+    Arguments:
+        logits: The logit tensor. Note that it shouldn't have been sigmoid
+            applied.
+
+    Return:
+        Averaged binary cross entropy over all elements.
+    """
+    return mean_sigmoid_cross_entropy(tf.zeros_like(logits), logits)
 
 
 class ResidualLayer(tf.keras.layers.Layer):
     """
     Implement a basic residual layer.
     """
+
     def __init__(self, filters):
         """
-        Initialize layers.
+        Initialize sub-layers for residual layer.
+
+        Arguments:
+            filters: The size of the last dimention of the output tensor.
         """
         super().__init__()
 
@@ -50,24 +127,29 @@ class ResidualLayer(tf.keras.layers.Layer):
         self._layer_add = tf.keras.layers.Add()
         self._layer_relu = tf.keras.layers.ReLU()
 
-    def call(self, tensors):
+    def call(self, inputs):
         """
-        Do the residual layer job.
+        Compute the residual block.
+
+        Arguments:
+            inputs: A tensor.
+
+        Return:
+            A tensor.
         """
-        raw_tensors = tensors
+        tensor = self._layer_0(inputs)
+        tensor = self._layer_1(tensor)
+        tensor = self._layer_add([tensor, inputs])
+        tensor = self._layer_relu(tensor)
 
-        tensors = self._layer_0(tensors)
-        tensors = self._layer_1(tensors)
-        tensors = self._layer_add([tensors, raw_tensors])
-        tensors = self._layer_relu(tensors)
-
-        return tensors
+        return tensor
 
 
 class Generator(tf.keras.Model):
     """
     Implement the generator of ENet.
     """
+
     def __init__(self):
         """
         Build generator layers.
@@ -122,34 +204,34 @@ class Generator(tf.keras.Model):
     @tf.function
     def call(self, inputs):
         """
-        Required:
-        - sd_images
-            Tensors of low resolution images.
+        Generate super resolved image tensor.
 
-        - bq_images
-            Tensors of low resolution images but in 4x size. Bicubic up-scaled
-            from sd_images as the paper.
+        Arguments:
+            inputs: A list with 2 tensors. The first tensor represents the
+                image to be super resolved. The second one represent the
+                bicubic up scaled version (4x) of the first one.
 
         Return:
-        - sr_images
-            Tensors of super resolved images.
+            A tensor represents super-resolved images.
         """
-        sd_images, bq_images = inputs
+        sd_image, bq_image = inputs
 
-        tensors = functools.reduce(
-            lambda tensors, layer: layer(tensors),
+        tensor = functools.reduce(
+            lambda tensor_, layer: layer(tensor_),
             self._generator_layers,
-            sd_images)
+            sd_image)
 
-        tensors = self._layer_add([tensors, bq_images])
+        tensor = self._layer_add([tensor, bq_image])
 
-        return tensors
+        return tensor
 
 
 class Discriminator(tf.keras.Model):
     """
     arXiv: 1612.07919, supplementary, table 1
+    Implement the discriminator network of ENet.
     """
+
     def __init__(self):
         """
         Build discriminator layers.
@@ -181,20 +263,22 @@ class Discriminator(tf.keras.Model):
             tf.keras.layers.Dense(1024, activation=tf.nn.leaky_relu))
 
         self._discriminator_layers.append(
-            tf.keras.layers.Dense(1, activation=tf.nn.sigmoid))
+            tf.keras.layers.Dense(1, activation=None))
 
     @tf.function
     def call(self, inputs):
         """
-        Required:
-        - hd_images:
-            Tensors of high resolution images for discrimination.
+        Discriminate if a tensor is real.
+
+        Arguments:
+            inputs: A tensor represents images which should be high resolution
+                or super resolved image.
 
         Return:
-            Tensors of confidence (sigmoid).
+            Tensors of confidence (without sigmoid).
         """
         return functools.reduce(
-            lambda tensors, layer: layer(tensors),
+            lambda tensor, layer: layer(tensor),
             self._discriminator_layers,
             inputs)
 
@@ -204,19 +288,32 @@ class GeneratorTrace(tf.keras.Model):
     Implement the network for reducing perceptual loss, texture matching loss,
     generator loss (fool the discriminator).
     """
+
     def __init__(self, generator, discriminator, vgg19):
         """
         Keep core models & build loss functions.
+
+        Arguments:
+            generator: A network which accepts a low resolution image tensor
+                (1x) and a bicubic up-scaled image tensor (4x). Return a super-
+                resolved image tensor.
+            discriminator: A network which accepts a image tensor and return
+                logits.
+            vgg19: A network of VGG 19 which will not be trained.
         """
         super().__init__()
 
         self._generator = generator
         self._discriminator = discriminator
         self._vgg19 = vgg19
-        self._cross_entropy = tf.keras.losses.BinaryCrossentropy(
-            reduction=tf.keras.losses.Reduction.SUM)
-        self._mean_squared_error = tf.keras.losses.MeanSquaredError(
-            reduction=tf.keras.losses.Reduction.SUM)
+
+    @property
+    def trainable_variables(self):
+        """
+        Return trainable variables of the network. When training this network,
+        we only want to train its generator part.
+        """
+        return self._generator.trainable_variables
 
     def perceptual_loss(self, sr_images_vgg, hd_images_vgg):
         """
@@ -224,6 +321,13 @@ class GeneratorTrace(tf.keras.Model):
         To capture both low-level and high-level features, we use a combination
         of the second and fifth pooling layers and compute the MSE on their
         feature activations.
+
+        Arguments:
+            sr_images_vgg: Layers of VGG19 with super-resolved image tensor.
+            hd_images_vgg: Layers of VGG19 with high definition image tensor.
+
+        Return:
+            Perceptual loss between 2 tensors.
         """
         # NOTE: arXiv:1612.07915, 5.3,
         #       For the perceptual loss Lp and the texture loss Lt, we
@@ -233,8 +337,8 @@ class GeneratorTrace(tf.keras.Model):
         sr_block5_pool = normalize(sr_images_vgg['block5_pool'])
         hd_block5_pool = normalize(hd_images_vgg['block5_pool'])
 
-        loss_pool_2 = self._mean_squared_error(hd_block2_pool, sr_block2_pool)
-        loss_pool_5 = self._mean_squared_error(hd_block5_pool, sr_block5_pool)
+        loss_pool_2 = mean_squared_error(hd_block2_pool, sr_block2_pool)
+        loss_pool_5 = mean_squared_error(hd_block5_pool, sr_block5_pool)
 
         # NOTE: arXiv:1612.07915, weights come from table 2
         loss = 0.2 * loss_pool_2 + 0.02 * loss_pool_5
@@ -244,6 +348,14 @@ class GeneratorTrace(tf.keras.Model):
     def texture_matching_loss(self, sr_images_vgg, hd_images_vgg):
         """
         arXiv:1612.07919v2, 4.2.3
+        Compute texture matching loss with 2 VGG19 networks.
+
+        Arguments:
+            sr_images_vgg: Layers of VGG19 with super-resolved image tensor.
+            hd_images_vgg: Layers of VGG19 with high definition image tensor.
+
+        Return:
+            Texture matching loss between 2 tensors.
         """
         # NOTE: supplementary, table 2
         layers = [
@@ -297,29 +409,23 @@ class GeneratorTrace(tf.keras.Model):
             hd_grams = \
                 tf.linalg.matmul(hd_tensors, hd_tensors, transpose_a=True)
 
-            loss += weight * self._mean_squared_error(hd_grams, sr_grams)
+            loss += weight * mean_squared_error(hd_grams, sr_grams)
 
         return loss
-
-    @property
-    def trainable_variables(self):
-        """
-        """
-        return self._generator.trainable_variables
 
     @tf.function
     def call(self, inputs):
         """
-        Required:
-        - sd_images:
-            Tensors of low resolution images for super resolution.
-        - bq_images:
-            Tensors of bicubic up-scaled sd_images.
-        - hd_images:
-            Tensors of high resolution images, as ground truth.
+        Compute the loss of generating super resolved image tensor.
+
+        Arguments:
+            inputs: A list consists of 3 tensors. The 1st tensor represents low
+                resolution images. The 2nd tensor represents bicubic up-scaled
+                version of the 1st one. The 3rd tensor represents high
+                definition images.
 
         Return:
-            Information to train the model for one step.
+            Loss of generating super resolved image tensor.
         """
         sd_images, bq_images, hd_images = inputs
 
@@ -346,7 +452,7 @@ class GeneratorTrace(tf.keras.Model):
         # NOTE:
         fake = self._discriminator(sr_images)
 
-        loss_generator = self._cross_entropy(tf.ones_like(fake), fake)
+        loss_generator = mean_real_sigmoid_cross_entropy(fake)
 
         loss = 2.0 * loss_generator + loss_perceptual + loss_texture_matching
 
@@ -357,36 +463,46 @@ class DiscriminatorTrace(tf.keras.Model):
     """
     Implement the network for reducing discriminator loss (denfend generator).
     """
+
     def __init__(self, generator, discriminator):
         """
         Keep core models & build functions.
+
+        Arguments:
+            generator: A network which accepts a low resolution image tensor
+                (1x) and a bicubic up-scaled image tensor (4x). Return a super-
+                resolved image tensor.
+            discriminator: A network which accepts a image tensor and return
+                logits.
         """
         super().__init__()
 
         self._generator = generator
         self._discriminator = discriminator
-        self._cross_entropy = tf.keras.losses.BinaryCrossentropy(
-            reduction=tf.keras.losses.Reduction.SUM)
 
     @property
     def trainable_variables(self):
         """
+        Return trainable variables of the network. When training this network,
+        we only want to train its discriminator part.
         """
         return self._discriminator.trainable_variables
 
     @tf.function
     def call(self, inputs):
         """
-        Required:
-        - sd_images
-            Tensors of low resolution images for super resolution.
-        - bq_images
-            Tensors of images which are 4x bicubuc up-scaled from sd_images.
-        - hd_images
-            Tensors of high resolution images, as ground truth.
+        Compute the loss of discriminating super resolved and high definition
+        image tensors.
+
+        Arguments:
+            inputs: A list consists of 3 tensors. The 1st tensor represents low
+                resolution images. The 2nd tensor represents bicubic up-scaled
+                version of the 1st one. The 3rd tensor represents high
+                definition images.
 
         Return:
-            Information to train the model for one step.
+            The loss of discriminating super resolved and high definition
+            image tensors.
         """
         sd_images, bq_images, hd_images = inputs
 
@@ -395,8 +511,8 @@ class DiscriminatorTrace(tf.keras.Model):
         real = self._discriminator(hd_images)
         fake = self._discriminator(sr_images)
 
-        real_loss = self._cross_entropy(tf.ones_like(real), real)
-        fake_loss = self._cross_entropy(tf.zeros_like(fake), fake)
+        real_loss = mean_real_sigmoid_cross_entropy(real)
+        fake_loss = mean_fake_sigmoid_cross_entropy(fake)
 
         loss = real_loss + fake_loss
 
@@ -406,7 +522,13 @@ class DiscriminatorTrace(tf.keras.Model):
 def build_models(**kwargs):
     """
     Build sub models for training ENet.
+
+    Arguments:
+        vgg19_weights_path: Path to the pre-trained VGG19 weights.
     """
+    if 'vgg19_weights_path' not in kwargs:
+        raise ValueError('ENet needs pre-trained VGG19 weights.')
+
     generator = Generator()
     discriminator = Discriminator()
     vgg19 = model_vgg.VGG19(kwargs['vgg19_weights_path'])
@@ -415,10 +537,13 @@ def build_models(**kwargs):
     discriminator_trace = DiscriminatorTrace(generator, discriminator)
 
     return {
+        # NOTE: We will train extension models.
         'extensions': {
             'generator': generator_trace,
             'discriminator': discriminator_trace,
         },
+        # NOTE: Extension models use shared weights of principal models. We
+        #       need principal model to save trained weights.
         'principals': {
             'generator': generator,
             'discriminator': discriminator,

@@ -1,5 +1,6 @@
 """
 """
+import functools
 import importlib
 import logging
 import os
@@ -45,18 +46,23 @@ def resolve_strings(data, experiment_name):
 def global_step(context):
     """
     Count the global training step base on current iterations of the most
-    frequent optimizer and the record from checkpoint. Return the global
-    training step.
+    active optimizer and the record from checkpoint. Return the global training
+    step.
 
     Arguments:
         context: experiment information in a dictionary.
     """
+    optimizers = context['optimizers'].values()
+    strategy = context['strategy']
     step = 0
 
     # NOTE: optimizer.iterations starts from 0 for each training session (
     #       both on fresh start and load from checkpoint)
-    for optimizer in context['optimizers'].values():
-        step = max(step, int(optimizer.iterations))
+    for optimizer in optimizers:
+        num_iterations = strategy.reduce(
+            tf.distribute.ReduceOp.MEAN, optimizer.iterations, axis=None)
+
+        step = max(step, int(num_iterations))
 
     return step + context['experiment']['global_step']
 
@@ -67,10 +73,13 @@ def load_experiment(path):
     basic configuration of this experiment as the experiment context.
 
     Arguments:
-    path -- path to a fresh experiment yaml or a checkpoint yaml.
+        path -- path to a fresh experiment yaml or a checkpoint yaml.
 
     Raises:
-        ValueError: if path is invalid.
+        ValueError:
+            - if path is invalid.
+            - if the experiment has no name.
+            - if configuration of summay is missing.
     """
     if not os.path.isfile(path):
         raise ValueError(f'Invalid experiment path: {path}')
@@ -78,24 +87,109 @@ def load_experiment(path):
     with open(path, 'r') as yaml_file:
         experiment = yaml.YAML(typ='safe').load(yaml_file)
 
+    if 'name' not in experiment:
+        raise ValueError('An experiment needs a name.')
+
+    if not experiment.get('summary', {}).get('path', None):
+        raise ValueError('An experiment needs a scribe.')
+
+    if 'global_step' not in experiment:
+        experiment['global_step'] = 0
+
     resolve_strings(experiment, experiment['name'])
 
-    #
-    logger = logging.getLogger(f'{experiment["name"]}')
-
-    logger.setLevel(logging.DEBUG)
-
-    #
     scribe = tf.summary.create_file_writer(experiment['summary']['path'])
+    logger = logging.getLogger(experiment['name'])
+
+    logger.setLevel(logging.INFO)
+
+    gpus = tf.config.experimental.list_logical_devices('GPU')
+    gpus = [gpu.name for gpu in gpus]
+
+    if len(gpus) > 1:
+        strategy = tf.distribute.MirroredStrategy(gpus)
+    else:
+        strategy = tf.distribute.OneDeviceStrategy(gpus[0])
+
+    logger.info('global step: %s', experiment['global_step'])
+    logger.info('summary: %s', experiment['summary']['path'])
+    logger.info('strategy %s: %s', strategy, gpus)
 
     # NOTE: Keep the loaded experiment. It can be then saved as checkpoint with
     #       updated information. This way the checkpoint would be in the same
     #       format as a fresh experiment yaml.
     return {
         'experiment': experiment,
+        'strategy': strategy,
         'logger': logger,
         'scribe': scribe,
     }
+
+
+def build_optimizer(optimizer_config):
+    """
+    """
+    if optimizer_config['optimizer'].lower() == 'adam':
+        optimizer_class = tf.keras.optimizers.Adam
+
+    config = {}
+
+    if 'learning_rate' in optimizer_config:
+        config['learning_rate'] = optimizer_config['learning_rate']
+
+    config = optimizer_config.get('config', {}) or config
+
+    return optimizer_class.from_config(config)
+
+
+def build_strategic_training_model(
+        strategy, base_model, index_inputs, optimizer, global_batch_size):
+    """
+    """
+    def train_one_step(inputs):
+        new_inputs = [inputs[index] for index in index_inputs]
+
+        with tf.GradientTape() as tape:
+            loss = base_model(new_inputs)
+
+            loss = tf.reduce_sum(loss) * (1.0 / global_batch_size)
+
+        gradients = tape.gradient(loss, base_model.trainable_variables)
+
+        optimizer.apply_gradients(
+            zip(gradients, base_model.trainable_variables))
+
+        return loss
+
+    @tf.function
+    def train_one_step_in_graph(data):
+        per_example_losses = strategy.experimental_run_v2(
+            train_one_step, args=(data,))
+
+        return strategy.reduce(
+            tf.distribute.ReduceOp.MEAN, per_example_losses, axis=None)
+
+    return train_one_step_in_graph
+
+
+def build_strategic_validation_model(
+        strategy, base_model, index_inputs, index_hd_images):
+    """
+    """
+    def validate_one_step(inputs):
+        new_inputs = [inputs[index] for index in index_inputs]
+
+        hd_images = inputs[index_hd_images]
+
+        outputs = base_model(new_inputs)
+
+        return outputs, hd_images
+
+    @tf.function
+    def validate_one_step_in_graph(data):
+        return strategy.experimental_run_v2(validate_one_step, args=(data,))
+
+    return validate_one_step_in_graph
 
 
 def build_datasets(context):
@@ -106,6 +200,14 @@ def build_datasets(context):
     Arguments:
         context: experiment information in a dictionary.
     """
+    def dataset_fn(input_context, dataset):
+      return dataset.shard(
+          input_context.num_input_pipelines, input_context.input_pipeline_id)
+
+    gpus = tf.config.experimental.list_logical_devices('GPU')
+    num_gpus = len(gpus)
+
+    strategy = context['strategy']
     data_streams = context['experiment']['data_streams']
 
     context['data_streams'] = {}
@@ -113,9 +215,14 @@ def build_datasets(context):
     for name, data_stream in data_streams.items():
         tf_dataset = dataset.build_dataset(
             image_streams=data_stream['image_streams'],
-            batch_size=data_stream['batch_size'],
+            batch_size=data_stream['batch_size'] * num_gpus,
             sample_rate=data_stream['sample_rate'],
             augment=data_stream['augment'])
+
+        with strategy.scope():
+            tf_dataset = strategy \
+                .experimental_distribute_datasets_from_function(
+                    functools.partial(dataset_fn, dataset=tf_dataset))
 
         context['data_streams'][name] = iter(tf_dataset)
 
@@ -139,41 +246,66 @@ def build_models(context):
 
     # NOTE: Build models and train the entire model for 1 step to build the
     #       network graph explicitly so we can load weights later.
-    context['models'] = importlib \
-        .import_module(models_config['name']) \
-        .build_models(**models_config['parameters'])
+    with context['strategy'].scope():
+        context['models'] = importlib \
+            .import_module(models_config['name']) \
+            .build_models(**models_config['parameters'])
 
-    for config in optimizers_config.values():
-        data_stream = context['data_streams'][config['data_stream']]
+    # NOTE: Build optimizers.
+    context['optimizers'] = {}
+    context['models']['strategic_extensions'] = {}
+    context['models']['strategic_principals'] = {}
 
-        model = context['models']['extensions'][config['extension_model']]
+    gpus = tf.config.experimental.list_logical_devices('GPU')
+    num_gpus = len(gpus)
 
-        model(**next(data_stream))
+    for optimizer_name, config in optimizers_config.items():
+        model_name = config['extension_model']
 
-        # NOTE: We do not have to do back propagation since we need only the
-        #       concreate graph to load weights.
+        model = context['models']['extensions'][model_name]
+
+        context['optimizers'][optimizer_name] = build_optimizer(config)
+
+        data_stream = context['data_streams'][config['data_stream']['name']]
+
+        data_stream_config = context['experiment']['data_streams'][config['data_stream']['name']]
+
+        globatch_size = data_stream_config['batch_size'] * num_gpus
+
+        with context['strategy'].scope():
+            strategic_model = build_strategic_training_model(
+                context['strategy'],
+                model,
+                config['data_stream']['parameters'],
+                context['optimizers'][optimizer_name],
+                globatch_size)
+
+            strategic_model(next(data_stream))
+
+            context['models']['strategic_extensions'][model_name] = strategic_model
+
+    # NOTE:
+    for name, config in context['experiment']['validators'].items():
+        model_name = config['principal_model']
+
+        model = context['models']['principals'][model_name]
+
+        with context['strategy'].scope():
+            strategic_model = build_strategic_validation_model(
+                context['strategy'],
+                model,
+                config['data_stream']['parameters'],
+                config['hd_images'])
+
+        context['models']['strategic_principals'][model_name] = strategic_model
 
     # NOTE: Load weights.
     for name, config in models_config['principals'].items():
         if not os.path.isfile(config.get('path', '') or ''):
             continue
 
-        context['models']['principals'][name].load_weights(config['path'])
-
-    # NOTE: Build optimizers.
-    context['optimizers'] = {}
-
-    for name, config in optimizers_config.items():
-        if config['optimizer'].lower() == 'adam':
-            optimizer = tf.keras.optimizers.Adam
-
-        default = {}
-
-        if 'learning_rate' in config:
-            default['learning_rate'] = config['learning_rate']
-
-        context['optimizers'][name] = \
-            optimizer.from_config(config.get('config', {}) or default)
+        with context['strategy'].scope():
+            context['models']['principals'][name].load_weights(config['path'])
 
 
 def train(context):
@@ -192,21 +324,17 @@ def train(context):
         if step % config['cycle'] != 0:
             continue
 
-        data_stream = context['data_streams'][config['data_stream']]
+        data_stream = context['data_streams'][config['data_stream']['name']]
 
-        model = context['models']['extensions'][config['extension_model']]
+        model = context['models']['strategic_extensions'][config['extension_model']]
 
-        # TODO: batch_size_multiplier
-
-        fetched = model(**next(data_stream))
-
-        optimizer.apply_gradients(
-            zip(fetched['gradients'], fetched['variables']))
+        with context['strategy'].scope():
+            loss = model(next(data_stream))
 
         with context['scribe'].as_default():
-            tf.summary.scalar(f'loss[{name}]', data=fetched['loss'], step=step)
+            tf.summary.scalar(f'loss[{name}]', data=loss, step=step)
 
-        context['logger'].info(f'loss[{name}][{step}]: {fetched["loss"]}')
+        context['logger'].info(f'loss[{name}][{step}]: {loss}')
 
 
 def validate(context):
@@ -227,15 +355,13 @@ def validate(context):
 
         data_stream = context['data_streams'][data_stream_name]
 
-        data = next(data_stream)
+        model = context['models']['strategic_principals'][config['principal_model']]
 
-        # NOTE: Inputs must conform the requirements of the principal model.
-        inputs = [data[name] for name in config['data_stream']['parameters']]
+        with context['strategy'].scope():
+            resp = model(next(data_stream))
 
-        model = context['models']['principals'][config['principal_model']]
-
-        sr_images = model(inputs)
-        hd_images = data[config['hd_images']]
+        sr_images = tf.concat(resp[0].values, axis=0)
+        hd_images = tf.concat(resp[1].values, axis=0)
 
         psnr = tf.image.psnr(sr_images, hd_images, 2.0)
         psnr = np.mean(psnr)
@@ -265,12 +391,14 @@ def save(context):
     Arguments:
         context: experiment information in a dictionary.
     """
-    step = global_step(context)
-
     experiment = context['experiment']
+
+    step = global_step(context)
 
     if step % experiment['checkpoint']['cycle'] != 0:
         return
+
+    base_step = experiment['global_step']
 
     experiment['global_step'] = step
 
@@ -279,11 +407,9 @@ def save(context):
         name = f'{str(step).rjust(16, "0")}_{model_name}.h5'
         path = os.path.join(experiment['checkpoint']['path'], name)
 
+        context['models']['principals'][model_name].save_weights(path)
+
         config['path'] = path
-
-        model = context['models']['principals'][model_name]
-
-        model.save_weights(path)
 
     # NOTE: Update optimizers' configs.
     for name, config in experiment['optimizers'].items():
@@ -303,6 +429,8 @@ def save(context):
         dumper.representer.add_representer(np.float32, represent_numpy_float32)
         dumper.dump(experiment, stream=yaml_file)
 
+    experiment['global_step'] = base_step
+
 
 def train_validate_save(experiment_path):
     """
@@ -317,7 +445,7 @@ def train_validate_save(experiment_path):
     build_datasets(context)
     build_models(context)
 
-    for _ in range(100):
+    for _ in range(10000):
         train(context)
         validate(context)
         save(context)
@@ -328,5 +456,12 @@ if __name__ == '__main__':
 
     if len(sys.argv) != 2:
         raise ValueError('Usage: python task_train.py experiment_ooxx.json')
+
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+
+    tf.config.experimental.set_virtual_device_configuration(
+        gpus[0],
+        [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120),
+         tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120)])
 
     train_validate_save(sys.argv[1])

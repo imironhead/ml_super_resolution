@@ -21,18 +21,18 @@ def sanity_check(image_streams):
     if not image_streams:
         raise ValueError('Empty image_streams')
 
-    for name, info in image_streams.items():
+    for index, info in enumerate(image_streams):
         if not isinstance(info.get('size', None), int):
-            raise ValueError(f'Invalid size for {name}')
+            raise ValueError(f'Invalid size for stream {index}')
 
         if not isinstance(info.get('path', None), str):
-            raise ValueError(f'Invalid path for {name}')
+            raise ValueError(f'Invalid path for stream {index}')
 
         if not os.path.isdir(info['path']):
-            raise ValueError(f'Invalid path for {name}')
+            raise ValueError(f'Invalid path for stream {index}')
 
     # NOTE: Select one image for sanity check.
-    path = [info['path'] for info in image_streams.values()][0]
+    path = [info['path'] for info in image_streams][0]
     name = os.listdir(path)[0]
 
     all_sizes = []
@@ -41,7 +41,7 @@ def sanity_check(image_streams):
     ref_image_width = None
     ref_patch_size = None
 
-    for _, info in image_streams.items():
+    for info in image_streams:
         path = os.path.join(info['path'], name)
 
         image = imageio.imread(path)
@@ -86,14 +86,14 @@ def infinite_image_streams(image_streams):
         ((path_0, size_0), (path_1, size_1), ...)
     """
     # NOTE: Collect names.
-    paths = [info['path'] for info in image_streams.values()]
+    paths = [info['path'] for info in image_streams]
     names = os.listdir(paths[0])
 
     # NOTE: Accept only jpg or png
     names = [name for name in names if name.lower()[-4:] in ['.jpg', '.png']]
 
     # NOTE: All names must exist within all streams' directory.
-    for info, name in itertools.product(image_streams.values(), names):
+    for info, name in itertools.product(image_streams, names):
         path = os.path.join(info['path'], name)
 
         if not os.path.isfile(path):
@@ -105,7 +105,7 @@ def infinite_image_streams(image_streams):
 
         new_streams = []
 
-        for info in image_streams.values():
+        for info in image_streams:
             new_streams.append((
                 os.path.join(info['path'], name), info['size']))
 
@@ -243,13 +243,14 @@ def finalize_batches(image_streams, *batches):
       layers which need concreate shape (e.g. dense layer need input shape to
       build its weights).
     """
-    new_batches = {}
+    new_streams = []
 
-    for index, (name, info) in enumerate(image_streams.items()):
-        new_batches[name] = tf.reshape(
-            batches[index], [-1, info['size'], info['size'], 3])
+    for index, info in enumerate(image_streams):
+        new_shape = [-1, info['size'], info['size'], 3]
+        new_stream = tf.reshape(batches[index], new_shape)
+        new_streams.append(new_stream)
 
-    return new_batches
+    return new_streams
 
 
 def build_dataset(
@@ -314,7 +315,7 @@ def build_dataset(
     reference_patch_size, even_anchor = sanity_check(image_streams)
 
     # NOTE: Represent each steam with it's image path and patch size.
-    output_types = tuple([(tf.string, tf.int64) for _ in image_streams.keys()])
+    output_types = tuple([(tf.string, tf.int64) for _ in image_streams])
 
     # NOTE: Read images in random order and infinitely.
     dataset = tf.data.Dataset.from_generator(

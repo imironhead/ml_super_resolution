@@ -199,7 +199,7 @@ class Discriminator(tf.keras.Model):
             inputs)
 
 
-class GeneratorTrace:
+class GeneratorTrace(tf.keras.Model):
     """
     Implement the network for reducing perceptual loss, texture matching loss,
     generator loss (fool the discriminator).
@@ -208,13 +208,15 @@ class GeneratorTrace:
         """
         Keep core models & build loss functions.
         """
+        super().__init__()
+
         self._generator = generator
         self._discriminator = discriminator
         self._vgg19 = vgg19
         self._cross_entropy = tf.keras.losses.BinaryCrossentropy(
-            reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE)
+            reduction=tf.keras.losses.Reduction.SUM)
         self._mean_squared_error = tf.keras.losses.MeanSquaredError(
-            reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE)
+            reduction=tf.keras.losses.Reduction.SUM)
 
     def perceptual_loss(self, sr_images_vgg, hd_images_vgg):
         """
@@ -299,7 +301,14 @@ class GeneratorTrace:
 
         return loss
 
-    def __call__(self, sd_images, bq_images, hd_images):
+    @property
+    def trainable_variables(self):
+        """
+        """
+        return self._generator.trainable_variables
+
+    @tf.function
+    def call(self, inputs):
         """
         Required:
         - sd_images:
@@ -312,45 +321,39 @@ class GeneratorTrace:
         Return:
             Information to train the model for one step.
         """
-        with tf.GradientTape() as tape:
-            sr_images = self._generator([sd_images, bq_images])
+        sd_images, bq_images, hd_images = inputs
 
-            # NOTE: VGG features for perceptual loss and texture matching loss.
-            #       VGG net requires pixel values in range 0.0 ~ 255.0.
-            sr_images_vgg = sr_images * 127.5 + 127.5
-            hd_images_vgg = hd_images * 127.5 + 127.5
+        sr_images = self._generator([sd_images, bq_images])
 
-            # NOTE: VGG net is pre-trained in BGR channel order.
-            sr_images_vgg = tf.reverse(sr_images_vgg, [-1])
-            hd_images_vgg = tf.reverse(hd_images_vgg, [-1])
+        # NOTE: VGG features for perceptual loss and texture matching loss.
+        #       VGG net requires pixel values in range 0.0 ~ 255.0.
+        sr_images_vgg = sr_images * 127.5 + 127.5
+        hd_images_vgg = hd_images * 127.5 + 127.5
 
-            sr_images_vgg = self._vgg19(sr_images_vgg)
-            hd_images_vgg = self._vgg19(hd_images_vgg)
+        # NOTE: VGG net is pre-trained in BGR channel order.
+        sr_images_vgg = tf.reverse(sr_images_vgg, [-1])
+        hd_images_vgg = tf.reverse(hd_images_vgg, [-1])
 
-            loss_perceptual = \
-                self.perceptual_loss(sr_images_vgg, hd_images_vgg)
+        sr_images_vgg = self._vgg19(sr_images_vgg)
+        hd_images_vgg = self._vgg19(hd_images_vgg)
 
-            loss_texture_matching = \
-                self.texture_matching_loss(sr_images_vgg, hd_images_vgg)
+        loss_perceptual = \
+            self.perceptual_loss(sr_images_vgg, hd_images_vgg)
 
-            # NOTE:
-            fake = self._discriminator(sr_images)
+        loss_texture_matching = \
+            self.texture_matching_loss(sr_images_vgg, hd_images_vgg)
 
-            loss_generator = self._cross_entropy(tf.ones_like(fake), fake)
+        # NOTE:
+        fake = self._discriminator(sr_images)
 
-            loss = \
-                2.0 * loss_generator + loss_perceptual + loss_texture_matching
+        loss_generator = self._cross_entropy(tf.ones_like(fake), fake)
 
-        gradients = tape.gradient(loss, self._generator.trainable_variables)
+        loss = 2.0 * loss_generator + loss_perceptual + loss_texture_matching
 
-        return {
-            'loss': loss,
-            'variables': self._generator.trainable_variables,
-            'gradients': gradients
-        }
+        return loss
 
 
-class DiscriminatorTrace:
+class DiscriminatorTrace(tf.keras.Model):
     """
     Implement the network for reducing discriminator loss (denfend generator).
     """
@@ -358,12 +361,21 @@ class DiscriminatorTrace:
         """
         Keep core models & build functions.
         """
+        super().__init__()
+
         self._generator = generator
         self._discriminator = discriminator
         self._cross_entropy = tf.keras.losses.BinaryCrossentropy(
-            reduction=tf.keras.losses.Reduction.SUM_OVER_BATCH_SIZE)
+            reduction=tf.keras.losses.Reduction.SUM)
 
-    def __call__(self, sd_images, bq_images, hd_images):
+    @property
+    def trainable_variables(self):
+        """
+        """
+        return self._discriminator.trainable_variables
+
+    @tf.function
+    def call(self, inputs):
         """
         Required:
         - sd_images
@@ -376,25 +388,19 @@ class DiscriminatorTrace:
         Return:
             Information to train the model for one step.
         """
-        with tf.GradientTape() as tape:
-            sr_images = self._generator([sd_images, bq_images])
+        sd_images, bq_images, hd_images = inputs
 
-            real = self._discriminator(hd_images)
-            fake = self._discriminator(sr_images)
+        sr_images = self._generator([sd_images, bq_images])
 
-            real_loss = self._cross_entropy(tf.ones_like(real), real)
-            fake_loss = self._cross_entropy(tf.zeros_like(fake), fake)
+        real = self._discriminator(hd_images)
+        fake = self._discriminator(sr_images)
 
-            loss = real_loss + fake_loss
+        real_loss = self._cross_entropy(tf.ones_like(real), real)
+        fake_loss = self._cross_entropy(tf.zeros_like(fake), fake)
 
-        gradients = tape.gradient(
-            loss, self._discriminator.trainable_variables)
+        loss = real_loss + fake_loss
 
-        return {
-            'loss': loss,
-            'variables': self._discriminator.trainable_variables,
-            'gradients': gradients,
-        }
+        return loss
 
 
 def build_models(**kwargs):

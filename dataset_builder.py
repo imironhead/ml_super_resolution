@@ -14,9 +14,18 @@ import tensorflow as tf
 
 def sanity_check(image_streams):
     """
-    - Find the smallest desired patch size.
-    - See if we have to force random cropping on even position.
-    - See if the sizes sample images match their desired patch sizes.
+    Find the smallest desired patch size. Also see if we have to force random
+    cropping on even position. And see if the sizes sample images match their
+    desired patch sizes.
+
+    Arguments:
+        subsets: Information of image subsets in a list. For example,
+            [{'path': dir_path, 'size': patch_size}, ...]
+
+    Return:
+        Tuple of (ref_patch_size, even_anchor). ref_patch_size represents the
+        smalles patch size in subsets. even_anchor represents if we have to
+        crop small patches on even coordinates.
     """
     if not image_streams:
         raise ValueError('Empty image_streams')
@@ -75,26 +84,28 @@ def sanity_check(image_streams):
     return ref_patch_size, even_anchor
 
 
-def infinite_image_streams(image_streams):
+def infinite_image_streams(subsets):
     """
-    required:
+    Yield image information from subsets infinitely and randomly.
 
-    image_streams,
-        [{'path': dir_path, 'size': patch_size}, ...]
+    Arguments:
+        subsets: Information of image subsets in a list. For example,
+            [{'path': dir_path, 'size': patch_size}, ...]
 
-    yield
-        ((path_0, size_0), (path_1, size_1), ...)
+    Yield:
+        Associated image information from one or multiple source in a list. For
+        example, ((path_0, size_0), (path_1, size_1), ...)
     """
     # NOTE: Collect names.
-    paths = [info['path'] for info in image_streams]
+    paths = [subset['path'] for subset in subsets]
     names = os.listdir(paths[0])
 
     # NOTE: Accept only jpg or png
     names = [name for name in names if name.lower()[-4:] in ['.jpg', '.png']]
 
     # NOTE: All names must exist within all streams' directory.
-    for info, name in itertools.product(image_streams, names):
-        path = os.path.join(info['path'], name)
+    for subset, name in itertools.product(subsets, names):
+        path = os.path.join(subset['path'], name)
 
         if not os.path.isfile(path):
             raise ValueError('All names within each dir must be matched.')
@@ -103,21 +114,22 @@ def infinite_image_streams(image_streams):
     while True:
         name = np.random.choice(names)
 
-        new_streams = []
+        new_images = []
 
-        for info in image_streams:
-            new_streams.append((
-                os.path.join(info['path'], name), info['size']))
+        for subset in subsets:
+            new_images.append((
+                os.path.join(subset['path'], name), subset['size']))
 
-        yield tuple(new_streams)
+        yield tuple(new_images)
 
 
 def read_images(*image_descriptors):
     """
-    Required
+    Read images from one or multiple source.
 
-    image_descriptors
-        Each descriptor is a tuple, (image_path, patch_size).
+    Arguments:
+        image_descriptors: Each descriptor is a tuple, (image_path,
+            patch_size).
 
     Return
         The same descriptors, but paths are replaced with associated image
@@ -141,13 +153,10 @@ def sample_image_patches(
     """
     Sample patches from images.
 
-    Required
-
-    reference_patch_size
-        The smallest desired patch size.
-
-    even_anchor
-        If ture, force the cropping offset aligned to even position.
+    Arguments:
+        reference_patch_size: The smallest desired patch size.
+        even_anchor: If ture, force the cropping offset aligned to even
+            positions.
 
     Return
         Cropped patches.
@@ -202,12 +211,15 @@ def sample_image_patches(
 
 def random_augment(*patches):
     """
-    !!! Not sure if this works in graph !!!
+    Random augment all pathces. All associated patches must be augmented in the
+    same way. Currently support 3 types of augmentation: Vertical flipping,
+    horizontal flipping and transpose.
 
-    Currently support 3 types of augmentation:
-        - Vertical flipping.
-        - Horizontal flipping.
-        - Transpose.
+    Arguments:
+        patches: Tensors of image patches from one or multiple source.
+
+    Return:
+        Randomly augmented image patches.
     """
     augmented_patches = patches
 
@@ -230,96 +242,111 @@ def random_augment(*patches):
 def cast_pixels(*patches):
     """
     Cast all patches to float point values and map to [-1.0, +1.0].
+
+    Arguments:
+        patches: Tensors of image patches from one or multiple source.
+
+    Return:
+        A new Tensorflow dataset with all image pixels casted to floating point
+        between -1.0 to +1.0f.
     """
     patches = [tf.cast(patch, tf.float32) / 127.5 - 1.0 for patch in patches]
 
     return tuple(patches)
 
 
-def finalize_batches(image_streams, *batches):
+def finalize_batches(subsets, *batches):
     """
-    - Give name to each patch batch.
-    - Reshape each patch batch explicitly so that the graph can initialize
-      layers which need concreate shape (e.g. dense layer need input shape to
-      build its weights).
+    Reshape each patch batch explicitly so that the graph can initialize layers
+    which need concreate shape (e.g. dense layer need input shape to build its
+    weights).
+
+    Arguments:
+        subsets: List of image information. Each element has information of
+            patch size ('size').
+        batches: A Tensorflow dataset consists of image tensorw defined by
+            subsets.
+
+    Return:
+        A Tensorflow dataset and all its subset images have explicit shapes.
     """
-    new_streams = []
+    new_batches = []
 
-    for index, info in enumerate(image_streams):
-        new_shape = [-1, info['size'], info['size'], 3]
-        new_stream = tf.reshape(batches[index], new_shape)
-        new_streams.append(new_stream)
+    for index, subset in enumerate(subsets):
+        new_shape = [-1, subset['size'], subset['size'], 3]
+        new_batch = tf.reshape(batches[index], new_shape)
+        new_batches.append(new_batch)
 
-    return new_streams
+    return new_batches
 
 
 def build_dataset(
-        image_streams,
+        subsets,
         batch_size,
         sample_rate,
         augment,
         **_):
     """
     Build a tensorflow dataset which yields image batches. The source should be
-    images from different directories, each of them is connected file name. For
-    example,
+    images from different directories, each of them is connected with file
+    names. For example,
         ./image_1x/
             000.png
             001.png
         ./image_2x/
             000.png
             001.png
-    Take super resolution as example, we expected the yielded patched from
+    Take super resolution as example, we expected the yielded patches from
     ./image_1x/000.png can be upscaled to 200% size and match the associated
     patch from ./image_2x/000.png
 
-    Required parameters,
+    Arguments:
+        subsets: List of directory path and their associated patch size. For
+            example,
+            [
+                {
+                    'path': '/project/datasets/div2k_train_sd/',
+                    'size': 32
+                }, {
+                    'path': '/project/datasets/div2k_train_sdx4/',
+                    'size': 128
+                }, {
+                    'path': '/project/datasets/div2k_train_hd/',
+                    'size': 128
+                }
+            ]
 
-    image_streams
-        The dataset information in dictionary type. For example,
+            Represent images of 3 different scales from 3 different
+            directories. Each yielded image patch should match the required
+            size.
 
-        {
-            'sd_images': {
-                'path': '/project/datasets/div2k_train_sd/',
-                'size': 32
-            },
-            'bq_images': {
-                'path': '/project/datasets/div2k_train_sdx4/',
-                'size': 128
-            },
-            'hd_images': {
-                'path': '/project/datasets/div2k_train_hd/',
-                'size': 128
-            }
-        }
+        batch_size: Number of patches for each yielding. A yielded result
+            consists severl image batches (from different source) with shape
+            (batch_size, patch_size, patch_size, 3).
 
-        Represent images of 3 different scales from 3 different directories.
-        Each yield image patch should match the required size.
+        sample_rate: Number of small patches from a large image. Decreasing
+            sample_rate will increase loading of image reading but also
+            increase randomness of data.
 
-    batch_size
-        Number of patches for each yielding. A yielded result consists severl
-        image batched (from different source) with shape
-        (batch_size, patch_size, patch_size, 3).
+        augment: Do basic image augmentation (vertical & horizontal flip,
+            transpose).
 
-    sample_rate
-        Number of small patches from a large image. Decreasing sample_rate will
-        increase loading of image reading but also increase randomness of data.
-
-    augment
-        Do basic image augmentation (vertical & horizontal flip, transpose).
+    Return:
+        A Tensorflow dataset which yield image batches from one or multiple
+        source.
     """
     # NOTE: Sanity check.
     #       1. Find the smallest desired patch size.
-    #       2. See if we have to force random cropping on even position.
+    #       2. See if we have to force random cropping on even coordinates.
     #       3. See if the sizes sample images match their desired patch sizes.
-    reference_patch_size, even_anchor = sanity_check(image_streams)
+    reference_patch_size, even_anchor = sanity_check(subsets)
 
     # NOTE: Represent each steam with it's image path and patch size.
-    output_types = tuple([(tf.string, tf.int64) for _ in image_streams])
+    output_types = tuple([(tf.string, tf.int64) for _ in subsets])
 
     # NOTE: Read images in random order and infinitely.
     dataset = tf.data.Dataset.from_generator(
-        functools.partial(infinite_image_streams, image_streams), output_types)
+        functools.partial(infinite_image_streams, subsets), output_types)
 
     # NOTE: Read images. After this node, each stream becomes a tuple of image
     #       and patch size.
@@ -352,6 +379,6 @@ def build_dataset(
     dataset = dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 
     # NOTE: Remap each batch stream to it's original key.
-    dataset = dataset.map(functools.partial(finalize_batches, image_streams))
+    dataset = dataset.map(functools.partial(finalize_batches, subsets))
 
     return dataset

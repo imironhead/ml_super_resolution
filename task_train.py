@@ -242,7 +242,7 @@ def build_datasets(context):
 
     for name, dataset in datasets.items():
         tf_dataset = dataset_builder.build_dataset(
-            image_streams=dataset['image_streams'],
+            subsets=dataset['subsets'],
             batch_size=dataset['batch_size'] * num_gpus,
             sample_rate=dataset['sample_rate'],
             augment=dataset['augment'])
@@ -301,7 +301,7 @@ def build_models(context):
             strategic_model = build_strategic_training_model(
                 context['strategy'],
                 model,
-                config['dataset']['parameters'],
+                config['dataset']['input_indices'],
                 context['optimizers'][optimizer_name],
                 num_gpus)
 
@@ -310,8 +310,8 @@ def build_models(context):
             context['models']['strategic_extensions'][model_name] = strategic_model
 
     # NOTE:
-    for name, config in context['experiment']['validators'].items():
-        model_name = config['principal_model']
+    for validator in context['experiment']['validators']:
+        model_name = validator['principal_model']
 
         model = context['models']['principals'][model_name]
 
@@ -319,8 +319,8 @@ def build_models(context):
             strategic_model = build_strategic_validation_model(
                 context['strategy'],
                 model,
-                config['dataset']['parameters'],
-                config['hd_images'])
+                validator['dataset']['input_indices'],
+                validator['dataset']['hd_image_index'])
 
         context['models']['strategic_principals'][model_name] = strategic_model
 
@@ -372,15 +372,15 @@ def validate(context):
     """
     step = global_step(context)
 
-    for name, config in context['experiment']['validators'].items():
-        if step % config['cycle'] != 0:
+    for validator in context['experiment']['validators']:
+        if step % validator['cycle'] != 0:
             continue
 
-        dataset_name = config['dataset']['name']
+        dataset_name = validator['dataset']['name']
 
         dataset = context['datasets'][dataset_name]
 
-        model = context['models']['strategic_principals'][config['principal_model']]
+        model = context['models']['strategic_principals'][validator['principal_model']]
 
         with context['strategy'].scope():
             resp = model(next(dataset))
@@ -401,12 +401,12 @@ def validate(context):
         summary_image = [summary_image * 0.5 + 0.5]
 
         with context['scribe'].as_default():
-            tf.summary.scalar(f'psnr[{name}]', data=psnr, step=step)
-            tf.summary.scalar(f'ssim[{name}]', data=ssim, step=step)
-            tf.summary.image(f'hd-sr[{name}]', data=summary_image, step=step)
+            tf.summary.scalar(f'psnr[{validator["name"]}]', data=psnr, step=step)
+            tf.summary.scalar(f'ssim[{validator["name"]}]', data=ssim, step=step)
+            tf.summary.image(f'hd-sr[{validator["name"]}]', data=summary_image, step=step)
 
-        context['logger'].info(f'psnr[{name}][{step}]: {psnr}')
-        context['logger'].info(f'ssim[{name}][{step}]: {ssim}')
+        context['logger'].info(f'psnr[{validator["name"]}][{step}]: {psnr}')
+        context['logger'].info(f'ssim[{validator["name"]}][{step}]: {ssim}')
 
 
 def save(context):

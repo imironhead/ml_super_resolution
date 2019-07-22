@@ -10,7 +10,7 @@ import numpy as np
 import ruamel.yaml as yaml
 import tensorflow as tf
 
-import dataset
+import dataset_builder
 
 
 def resolve_strings(data, experiment_name):
@@ -236,23 +236,23 @@ def build_datasets(context):
     num_gpus = len(gpus)
 
     strategy = context['strategy']
-    data_streams = context['experiment']['data_streams']
+    datasets = context['experiment']['datasets']
 
-    context['data_streams'] = {}
+    context['datasets'] = {}
 
-    for name, data_stream in data_streams.items():
-        tf_dataset = dataset.build_dataset(
-            image_streams=data_stream['image_streams'],
-            batch_size=data_stream['batch_size'] * num_gpus,
-            sample_rate=data_stream['sample_rate'],
-            augment=data_stream['augment'])
+    for name, dataset in datasets.items():
+        tf_dataset = dataset_builder.build_dataset(
+            image_streams=dataset['image_streams'],
+            batch_size=dataset['batch_size'] * num_gpus,
+            sample_rate=dataset['sample_rate'],
+            augment=dataset['augment'])
 
         with strategy.scope():
             tf_dataset = strategy \
                 .experimental_distribute_datasets_from_function(
                     functools.partial(dataset_fn, dataset=tf_dataset))
 
-        context['data_streams'][name] = iter(tf_dataset)
+        context['datasets'][name] = iter(tf_dataset)
 
 
 def build_models(context):
@@ -264,10 +264,10 @@ def build_models(context):
         context: experiment information in a dictionary.
 
     Raises:
-        ValueError: if data_streams have not been built yet.
+        ValueError: if datasets have not been built yet.
     """
-    if 'data_streams' not in context:
-        raise ValueError('build data_streams before building models')
+    if 'datasets' not in context:
+        raise ValueError('build datasets before building models')
 
     models_config = context['experiment']['models']
     optimizers_config = context['experiment']['optimizers']
@@ -295,17 +295,17 @@ def build_models(context):
         with context['strategy'].scope():
             context['optimizers'][optimizer_name] = build_optimizer(config)
 
-        data_stream = context['data_streams'][config['data_stream']['name']]
+        dataset = context['datasets'][config['dataset']['name']]
 
         with context['strategy'].scope():
             strategic_model = build_strategic_training_model(
                 context['strategy'],
                 model,
-                config['data_stream']['parameters'],
+                config['dataset']['parameters'],
                 context['optimizers'][optimizer_name],
                 num_gpus)
 
-            strategic_model(next(data_stream))
+            strategic_model(next(dataset))
 
             context['models']['strategic_extensions'][model_name] = strategic_model
 
@@ -319,7 +319,7 @@ def build_models(context):
             strategic_model = build_strategic_validation_model(
                 context['strategy'],
                 model,
-                config['data_stream']['parameters'],
+                config['dataset']['parameters'],
                 config['hd_images'])
 
         context['models']['strategic_principals'][model_name] = strategic_model
@@ -349,12 +349,12 @@ def train(context):
         if step % config['cycle'] != 0:
             continue
 
-        data_stream = context['data_streams'][config['data_stream']['name']]
+        dataset = context['datasets'][config['dataset']['name']]
 
         model = context['models']['strategic_extensions'][config['extension_model']]
 
         with context['strategy'].scope():
-            loss = model(next(data_stream))
+            loss = model(next(dataset))
 
         with context['scribe'].as_default():
             tf.summary.scalar(f'loss[{name}]', data=loss, step=step)
@@ -376,14 +376,14 @@ def validate(context):
         if step % config['cycle'] != 0:
             continue
 
-        data_stream_name = config['data_stream']['name']
+        dataset_name = config['dataset']['name']
 
-        data_stream = context['data_streams'][data_stream_name]
+        dataset = context['datasets'][dataset_name]
 
         model = context['models']['strategic_principals'][config['principal_model']]
 
         with context['strategy'].scope():
-            resp = model(next(data_stream))
+            resp = model(next(dataset))
 
         sr_images = tf.concat(resp[0].values, axis=0)
         hd_images = tf.concat(resp[1].values, axis=0)

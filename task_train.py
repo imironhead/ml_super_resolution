@@ -1,4 +1,5 @@
 """
+Implement a script that train and validate super-resolution model.
 """
 import functools
 import importlib
@@ -71,6 +72,20 @@ def global_step(context):
 
 def find_latest_checkpoint(path):
     """
+    If path is a directory, assume it contains checkpoints and try to locate
+    it.
+
+    Arguments:
+        path: Path to a checkpoint or a directory contains checkpoints.
+
+    Raises:
+        ValueError: If path is a directory but contains no checkpoint.
+
+    Return:
+        If path is not a directory, return it directly.
+        If path contains no checkpoint, raise an exception.
+        Sort the checkpoint and return the newest one (Assume global_step is
+        embedded in the file name).
     """
     if not os.path.isdir(path):
         return path
@@ -82,7 +97,7 @@ def find_latest_checkpoint(path):
     if names:
         return os.path.join(path, names[-1])
     else:
-        return path
+        raise ValueError(f'Found no checkpoint within {path}')
 
 
 def load_experiment(path):
@@ -91,13 +106,16 @@ def load_experiment(path):
     basic configuration of this experiment as the experiment context.
 
     Arguments:
-        path -- path to a fresh experiment yaml or a checkpoint yaml.
+        path: Path to a fresh experiment yaml or a checkpoint yaml.
 
     Raises:
         ValueError:
             - if path is invalid.
             - if the experiment has no name.
             - if configuration of summay is missing.
+
+    Return:
+        A dictionary contains all information of this training task.
     """
     if not os.path.isfile(path):
         raise ValueError(f'Invalid experiment path: {path}')
@@ -145,28 +163,55 @@ def load_experiment(path):
     }
 
 
-def build_optimizer(optimizer_config):
+def build_optimizer(config):
     """
+    Build an optimizer from config.
+
+    Arguments:
+        config: Information of an optimizer.
+
+    Return:
+        A keras optimizer.
     """
-    if optimizer_config['optimizer'].lower() == 'adam':
+    if config['optimizer'].lower() == 'adam':
         optimizer_class = tf.keras.optimizers.Adam
 
-    config = {}
+    optimizer_config = {}
 
-    if 'learning_rate' in optimizer_config:
-        config['learning_rate'] = optimizer_config['learning_rate']
+    if 'learning_rate' in config:
+        optimizer_config['learning_rate'] = config['learning_rate']
 
-    config = optimizer_config.get('config', {}) or config
+    optimizer_config = config.get('config', {}) or optimizer_config
 
-    return optimizer_class.from_config(config)
+    return optimizer_class.from_config(optimizer_config)
 
 
 def build_strategic_training_model(
         strategy, base_model, index_inputs, optimizer, num_replicas):
     """
+    Make a new model that can be invoked with distribution strategy.
+
+    Arguments:
+        strategy: A distribution strategy which will applied to base_model for
+            training.
+        base_model: A model which we want to train with distributtion strategy.
+        index_inputs: List of index. Use it to rearange inputs for the model.
+            The dataset may supply data in different order. For example, the
+            dataset may supply (sd_images, hd_images) in each iteration while
+            base_model accept (hd_images, sd_images), in this case we need
+            index_inputs to be [1, 0].
+        optimizer:
+            The optimizer we use to train base_model.
+        num_replicas:
+            Number of distribution replicas. We multiple batch size with number
+            of replicas and let the strategy shard it.
+
+    Return:
+        A new tf.function like base_model but can be trained with strategy.
     """
     # NOTE: Refer to tensorflow distribute_strategy guide.
     #       https://www.tensorflow.org/beta/guide/distribute_strategy#using_tfdistributestrategy_with_custom_training_loops
+    #
     #       Using tf.distribute.Strategy with custom training loops
     #
     #       When apply_gradients is called within a distribution strategy
@@ -194,11 +239,9 @@ def build_strategic_training_model(
 
     @tf.function
     def train_one_step_in_graph(data):
-        per_example_losses = strategy.experimental_run_v2(
-            train_one_step, args=(data,))
+        losses = strategy.experimental_run_v2(train_one_step, args=(data,))
 
-        return strategy.reduce(
-            tf.distribute.ReduceOp.MEAN, per_example_losses, axis=None)
+        return strategy.reduce(tf.distribute.ReduceOp.MEAN, losses, axis=None)
 
     return train_one_step_in_graph
 
@@ -206,6 +249,22 @@ def build_strategic_training_model(
 def build_strategic_validation_model(
         strategy, base_model, index_inputs, index_hd_images):
     """
+    Make a new model that can be invoked with distribution strategy.
+
+    Arguments:
+        strategy: A distribution strategy which will applied to base_model for
+            validation.
+        base_model: A model which we want to validate with distributtion
+            strategy.
+        index_inputs: List of index. Use it to rearange inputs for the model.
+            The dataset may supply data in different order. For example, the
+            dataset may supply (sd_images, hd_images) in each iteration while
+            base_model accept (hd_images, sd_images), in this case we need
+            index_inputs to be [1, 0].
+        index_hd_images: Index of hd images in inputs.
+
+    Return:
+        A new tf.function like base_model but can be validated with strategy.
     """
     def validate_one_step(inputs):
         new_inputs = [inputs[index] for index in index_inputs]
@@ -232,8 +291,8 @@ def build_datasets(context):
         context: experiment information in a dictionary.
     """
     def dataset_fn(input_context, dataset):
-      return dataset.shard(
-          input_context.num_input_pipelines, input_context.input_pipeline_id)
+        return dataset.shard(
+            input_context.num_input_pipelines, input_context.input_pipeline_id)
 
     gpus = tf.config.experimental.list_logical_devices('GPU')
     num_gpus = len(gpus)
@@ -244,6 +303,8 @@ def build_datasets(context):
     context['datasets'] = {}
 
     for name, dataset in datasets.items():
+        # NOTE: Multiple batch_size with number of GPUs then shard for
+        #       distribution strategy.
         tf_dataset = dataset_builder.build_dataset(
             subsets=dataset['subsets'],
             batch_size=dataset['batch_size'] * num_gpus,
@@ -275,8 +336,6 @@ def build_models(context):
     models_config = context['experiment']['models']
     optimizers_config = context['experiment']['optimizers']
 
-    # NOTE: Build models and train the entire model for 1 step to build the
-    #       network graph explicitly so we can load weights later.
     with context['strategy'].scope():
         context['models'] = importlib \
             .import_module(models_config['name']) \
@@ -284,8 +343,8 @@ def build_models(context):
 
     # NOTE: Build optimizers.
     context['optimizers'] = {}
-    context['models']['strategic_extensions'] = {}
-    context['models']['strategic_principals'] = {}
+    context['models']['strategic_extensions'] = strategic_extensions = {}
+    context['models']['strategic_principals'] = strategic_principals = {}
 
     gpus = tf.config.experimental.list_logical_devices('GPU')
     num_gpus = len(gpus)
@@ -298,9 +357,6 @@ def build_models(context):
         with context['strategy'].scope():
             context['optimizers'][optimizer_name] = build_optimizer(config)
 
-        dataset = context['datasets'][config['dataset']['name']]
-
-        with context['strategy'].scope():
             strategic_model = build_strategic_training_model(
                 context['strategy'],
                 model,
@@ -308,11 +364,8 @@ def build_models(context):
                 context['optimizers'][optimizer_name],
                 num_gpus)
 
-            strategic_model(next(dataset))
+        strategic_extensions[model_name] = strategic_model
 
-            context['models']['strategic_extensions'][model_name] = strategic_model
-
-    # NOTE:
     for validator in context['experiment']['validators']:
         model_name = validator['principal_model']
 
@@ -325,7 +378,7 @@ def build_models(context):
                 validator['dataset']['input_indices'],
                 validator['dataset']['hd_image_index'])
 
-        context['models']['strategic_principals'][model_name] = strategic_model
+        strategic_principals[model_name] = strategic_model
 
     # NOTE: Load weights.
     for name, config in models_config['principals'].items():
@@ -346,7 +399,9 @@ def train(context):
     """
     step = global_step(context)
 
-    for name, optimizer in context['optimizers'].items():
+    strategic_extensions = context['models']['strategic_extensions']
+
+    for name in context['optimizers']:
         config = context['experiment']['optimizers'][name]
 
         if step % config['cycle'] != 0:
@@ -354,7 +409,7 @@ def train(context):
 
         dataset = context['datasets'][config['dataset']['name']]
 
-        model = context['models']['strategic_extensions'][config['extension_model']]
+        model = strategic_extensions[config['extension_model']]
 
         with context['strategy'].scope():
             loss = model(next(dataset))
@@ -375,6 +430,8 @@ def validate(context):
     """
     step = global_step(context)
 
+    strategic_principals = context['models']['strategic_principals']
+
     for validator in context['experiment']['validators']:
         if step % validator['cycle'] != 0:
             continue
@@ -383,7 +440,7 @@ def validate(context):
 
         dataset = context['datasets'][dataset_name]
 
-        model = context['models']['strategic_principals'][validator['principal_model']]
+        model = strategic_principals[validator['principal_model']]
 
         with context['strategy'].scope():
             resp = model(next(dataset))
@@ -409,9 +466,12 @@ def validate(context):
         summary_image = [summary_image * 0.5 + 0.5]
 
         with context['scribe'].as_default():
-            tf.summary.scalar(f'psnr[{validator["name"]}]', data=psnr, step=step)
-            tf.summary.scalar(f'ssim[{validator["name"]}]', data=ssim, step=step)
-            tf.summary.image(f'hd-sr[{validator["name"]}]', data=summary_image, step=step)
+            tf.summary.scalar(
+                f'psnr[{validator["name"]}]', data=psnr, step=step)
+            tf.summary.scalar(
+                f'ssim[{validator["name"]}]', data=ssim, step=step)
+            tf.summary.image(
+                f'hd-sr[{validator["name"]}]', data=summary_image, step=step)
 
         context['logger'].info(f'psnr[{validator["name"]}][{step}]: {psnr}')
         context['logger'].info(f'ssim[{validator["name"]}][{step}]: {ssim}')
@@ -474,7 +534,7 @@ def train_validate_save(experiment_path):
     build_datasets(context)
     build_models(context)
 
-    for _ in range(10000):
+    while True:
         train(context)
         validate(context)
         save(context)
@@ -486,12 +546,14 @@ if __name__ == '__main__':
     if len(sys.argv) != 2:
         raise ValueError('Usage: python task_train.py experiment_ooxx.json')
 
-    gpus = tf.config.experimental.list_physical_devices('GPU')
+    # NOTE: Remove comments to test mirrored distribution strategy with single
+    #       GPU.
+#   gpus = tf.config.experimental.list_physical_devices('GPU')
 
-    tf.config.experimental.set_virtual_device_configuration(
-        gpus[0],
-        [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120),
-         tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120)])
+#   tf.config.experimental.set_virtual_device_configuration(
+#       gpus[0],
+#       [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120),
+#        tf.config.experimental.VirtualDeviceConfiguration(memory_limit=5120)])
 
     experiment_path = find_latest_checkpoint(sys.argv[1])
 

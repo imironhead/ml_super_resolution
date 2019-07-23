@@ -51,20 +51,22 @@ def global_step(context):
 
     Arguments:
         context: experiment information in a dictionary.
+
+    Return:
+        Adjusted global step.
     """
-    optimizers = context['optimizers'].values()
     strategy = context['strategy']
     step = 0
 
     # NOTE: optimizer.iterations starts from 0 for each training session (
     #       both on fresh start and load from checkpoint)
-    for optimizer in optimizers:
+    for optimizer in context['optimizers'].values():
         num_iterations = strategy.reduce(
             tf.distribute.ReduceOp.MEAN, optimizer.iterations, axis=None)
 
         step = max(step, int(num_iterations))
 
-    return step + context['experiment']['global_step']
+    return step + context['global_step']
 
 
 def find_latest_checkpoint(path):
@@ -139,6 +141,7 @@ def load_experiment(path):
         'strategy': strategy,
         'logger': logger,
         'scribe': scribe,
+        'global_step': experiment['global_step'],
     }
 
 
@@ -428,8 +431,6 @@ def save(context):
     if step % experiment['checkpoint']['cycle'] != 0:
         return
 
-    base_step = experiment['global_step']
-
     experiment['global_step'] = step
 
     # NOTE: Save model weights.
@@ -458,8 +459,6 @@ def save(context):
 
         dumper.representer.add_representer(np.float32, represent_numpy_float32)
         dumper.dump(experiment, stream=yaml_file)
-
-    experiment['global_step'] = base_step
 
 
 def train_validate_save(experiment_path):

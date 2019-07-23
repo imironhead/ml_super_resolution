@@ -385,8 +385,13 @@ def validate(context):
         with context['strategy'].scope():
             resp = model(next(dataset))
 
-        sr_images = tf.concat(resp[0].values, axis=0)
-        hd_images = tf.concat(resp[1].values, axis=0)
+        # TODO: Must we be that dirty?
+        if hasattr(resp[0], 'values'):
+            sr_images = tf.concat(resp[0].values, axis=0)
+            hd_images = tf.concat(resp[1].values, axis=0)
+        else:
+            sr_images = tf.concat(resp[0], axis=0)
+            hd_images = tf.concat(resp[1], axis=0)
 
         psnr = tf.image.psnr(sr_images, hd_images, 2.0)
         psnr = np.mean(psnr)

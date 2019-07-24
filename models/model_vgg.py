@@ -26,16 +26,26 @@ class VGG19(tf.keras.Model):
         if weights_path is None or not os.path.isfile(weights_path):
             raise ValueError(f'Invalid path: {weights_path}')
 
+        self._weights_path = weights_path
+        self._vgg_layers = []
+        self._mean_pixel_color = None
+
+    def build(self, input_shape):
+        """
+        Build layers for the model.
+
+        Parameters:
+            input_shape: Known input shape when building the mode. Note that we
+                do not need to call this method. Tensorflow will do the trick.
+        """
         vgg_weights = collections.defaultdict(dict)
 
-        with h5py.File(weights_path, 'r') as data:
+        with h5py.File(self._weights_path, 'r') as data:
             for scope_name, block in data.items():
                 for const_name, weights in block.items():
                     vgg_weights[scope_name][const_name] = weights[()]
 
         # NOTE:
-        self._vgg_layers = []
-
         layer_names = [
             'block1_conv1', 'block1_conv2', 'block1_pool',
             'block2_conv1', 'block2_conv2', 'block2_pool',

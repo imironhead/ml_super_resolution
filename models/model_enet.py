@@ -101,24 +101,38 @@ class ResidualLayer(tf.keras.layers.Layer):
     Implement a basic residual layer.
     """
 
-    def __init__(self, filters):
+    def __init__(self, filters, **kwargs):
         """
         Initialize sub-layers for residual layer.
 
         Arguments:
             filters: The size of the last dimention of the output tensor.
         """
-        super().__init__()
+        super().__init__(**kwargs)
 
+        self._filters = filters
+        self._layer_0 = None
+        self._layer_1 = None
+        self._layer_add = None
+        self._layer_relu = None
+
+    def build(self, input_shape):
+        """
+        Build layers for the model.
+
+        Parameters:
+            input_shape: Known input shape when building the mode. Note that we
+                do not need to call this method. Tensorflow will do the trick.
+        """
         self._layer_0 = tf.keras.layers.Convolution2D(
-            filters=filters,
+            filters=self._filters,
             kernel_size=3,
             strides=1,
             padding='same',
             activation='relu')
 
         self._layer_1 = tf.keras.layers.Convolution2D(
-            filters=filters,
+            filters=self._filters,
             kernel_size=1,
             strides=1,
             padding='same',
@@ -157,7 +171,16 @@ class Generator(tf.keras.Model):
         super().__init__()
 
         self._generator_layers = []
+        self._layer_add = None
 
+    def build(self, input_shape):
+        """
+        Build layers for the model.
+
+        Parameters:
+            input_shape: Known input shape when building the mode. Note that we
+                do not need to call this method. Tensorflow will do the trick.
+        """
         # NOTE: arXiv: 1612.07919v2, table 1
         # NOTE: To 64 channels.
         self._generator_layers.append(tf.keras.layers.Convolution2D(
@@ -240,6 +263,14 @@ class Discriminator(tf.keras.Model):
 
         self._discriminator_layers = []
 
+    def build(self, input_shape):
+        """
+        Build layers for the model.
+
+        Parameters:
+            input_shape: Known input shape when building the mode. Note that we
+                do not need to call this method. Tensorflow will do the trick.
+        """
         for i in range(5):
             filters = 2 ** (i + 5)
 

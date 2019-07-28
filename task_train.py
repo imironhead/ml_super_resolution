@@ -359,6 +359,8 @@ def build_models(context):
 
         model = context['models']['extensions'][model_name]
 
+        dataset = context['datasets'][config['dataset']['name']]
+
         with context['strategy'].scope():
             context['optimizers'][optimizer_name] = build_optimizer(config)
 
@@ -368,6 +370,10 @@ def build_models(context):
                 config['dataset']['input_indices'],
                 context['optimizers'][optimizer_name],
                 num_gpus)
+
+            # NOTE: Call once to force building the model variables so we can
+            #       load weights.
+            strategic_model(next(dataset))
 
         strategic_extensions[model_name] = strategic_model
 

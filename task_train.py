@@ -135,9 +135,9 @@ def load_experiment(path):
     if 'global_step' not in experiment:
         experiment['global_step'] = 0
 
-    os.makedirs(experiment['checkpoint']['path'], exist_ok=True)
-
     resolve_strings(experiment, experiment['name'])
+
+    os.makedirs(experiment['checkpoint']['path'], exist_ok=True)
 
     scribe = tf.summary.create_file_writer(experiment['summary']['path'])
     logger = logging.getLogger(experiment['name'])

@@ -129,8 +129,13 @@ def load_experiment(path):
     if not experiment.get('summary', {}).get('path', None):
         raise ValueError('An experiment needs a scribe.')
 
+    if not experiment.get('checkpoint', {}).get('path', None):
+        raise ValueError('An experiment needs a dir for checkpoint')
+
     if 'global_step' not in experiment:
         experiment['global_step'] = 0
+
+    os.makedirs(experiment['checkpoint']['path'], exist_ok=True)
 
     resolve_strings(experiment, experiment['name'])
 
